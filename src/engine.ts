@@ -76,6 +76,9 @@ export interface EngineOptions {
    *  tapped. Labels are .pano-pin buttons with data-kind and data-open for the
    *  page to style, the text in .pano-pin-text. */
   labels?: "fly" | "note";
+  /** The most device pixels per CSS pixel to draw at. Default 1.5: on a 2x
+   *  screen a photo looks the same and the GPU fills 44% fewer pixels. */
+  maxPixelRatio?: number;
 }
 
 const RADIUS = 500;
@@ -352,7 +355,7 @@ export class PanoEngine {
     this.labelMode = options.labels ?? "fly";
     this.background = options.background ?? 0x05030a;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, options.maxPixelRatio ?? 1.5));
     this.renderer.xr.enabled = true;
     this.renderer.xr.setReferenceSpaceType("local");
     this.scene = new THREE.Scene();
@@ -401,6 +404,7 @@ export class PanoEngine {
 
   private resize() {
     if (this.renderer.xr.isPresenting) return;
+    this.invalidate();
     const w = this.canvas.clientWidth || window.innerWidth;
     const h = this.canvas.clientHeight || window.innerHeight;
     this.camera.aspect = w / h;
@@ -443,6 +447,7 @@ export class PanoEngine {
   private finishCrossfade() {
     const o = this.outgoing;
     if (!o) return;
+    this.invalidate();
     this.outgoing = null;
     this.scene.remove(o.mesh);
     o.mesh.geometry.dispose();
@@ -479,6 +484,7 @@ export class PanoEngine {
   }
 
   private setTexture(src: HTMLImageElement | HTMLCanvasElement) {
+    this.invalidate();
     const THREE = this.THREE;
     const old = this.texture;
     const tex = new THREE.Texture(src);
@@ -728,6 +734,14 @@ export class PanoEngine {
     }
   }
 
+  /** Something changed that the camera does not show: a new image, a cover, labels. */
+  private dirty = true;
+  /** The camera and canvas the last frame was drawn for. */
+  private lastSig = "";
+  private invalidate() {
+    this.dirty = true;
+  }
+
   private lastT = performance.now();
   private frame = () => {
     const now = performance.now();
@@ -743,14 +757,26 @@ export class PanoEngine {
         this.camera.position.set(0, 0, 0);
         this.applyGyro();
       } else this.applyView();
-      this.drawMinimapBox();
-      this.placePins();
     }
+    const fading = !!this.outgoing;
     if (this.outgoing) {
       const k = Math.min(1, (now - this.outgoing.t0) / CROSSFADE_MS);
       const m = this.mesh?.material as T.MeshBasicMaterial | undefined;
       if (m) m.opacity = k;
       if (k >= 1) this.finishCrossfade();
+    }
+    // Draw only when something on screen would change. A still photo used to be
+    // redrawn sixty times a second at full size, which is most of what a GPU
+    // does here; skipping it frees the machine for the page around it.
+    const xr = this.renderer.xr.isPresenting;
+    const q = this.camera.quaternion;
+    const sig = `${q.x.toFixed(5)},${q.y.toFixed(5)},${q.z.toFixed(5)},${q.w.toFixed(5)},${this.camera.fov.toFixed(3)},${this.planetD.toFixed(4)},${this.canvas.width}x${this.canvas.height}`;
+    if (!xr && !fading && !this.dirty && sig === this.lastSig) return;
+    this.dirty = false;
+    this.lastSig = sig;
+    if (!xr) {
+      this.drawMinimapBox();
+      this.placePins();
     }
     if (this.planetD > 0.0005 && !this.renderer.xr.isPresenting && !this.isFlat && this.texture && this.input) this.renderPlanet();
     else this.renderer.render(this.scene, this.camera);
@@ -905,6 +931,7 @@ export class PanoEngine {
   /* ---------------------------------------------------- label pins */
 
   setHotspots(list: Hotspot[]) {
+    this.invalidate();
     this.hotspots = list;
     this.layers.pins.replaceChildren();
     this.pins = list.map((h, i) => {
@@ -1181,6 +1208,7 @@ export class PanoEngine {
   }
 
   private updateCovers() {
+    this.invalidate();
     const s = this.settings;
     const usable = (p: Picture | null) => (p && p.src.width > 0 && p.src.height > 0 ? p : null);
     const img = usable(this.nadirImage);

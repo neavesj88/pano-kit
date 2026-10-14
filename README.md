@@ -153,6 +153,14 @@ link in a tour would. For photos that are not a chained tour, pass
 (`data-open`; style hover yourself), and the view stays put. `showLabel(i)` turns
 to one and opens it, for a list of a photo's points of interest.
 
+### Frame rate
+
+The engine draws only when something on screen would change: the camera, the
+little-planet blend, the canvas size, a crossfade, or a new image, cover or
+labels (`invalidate()` inside). A still photo costs no GPU time; in VR it always
+draws. The pixel ratio is capped at `maxPixelRatio` (default 1.5). Pages should
+also avoid `backdrop-filter` over the canvas: the browser re-blurs it every frame.
+
 ## Decisions, so they are not re-argued
 
 - three.js directly, not Photo Sphere Viewer (no WebXR), A-Frame (global scene,

@@ -367,7 +367,7 @@ var PanoEngine = class {
     this.labelMode = options.labels ?? "fly";
     this.background = options.background ?? 328458;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, options.maxPixelRatio ?? 1.5));
     this.renderer.xr.enabled = true;
     this.renderer.xr.setReferenceSpaceType("local");
     this.scene = new THREE.Scene();
@@ -477,6 +477,7 @@ var PanoEngine = class {
   }
   resize() {
     if (this.renderer.xr.isPresenting) return;
+    this.invalidate();
     const w = this.canvas.clientWidth || window.innerWidth;
     const h = this.canvas.clientHeight || window.innerHeight;
     this.camera.aspect = w / h;
@@ -514,6 +515,7 @@ var PanoEngine = class {
   finishCrossfade() {
     const o = this.outgoing;
     if (!o) return;
+    this.invalidate();
     this.outgoing = null;
     this.scene.remove(o.mesh);
     o.mesh.geometry.dispose();
@@ -548,6 +550,7 @@ var PanoEngine = class {
     for (const c of [this.disk, this.figure]) if (c) c.mesh.visible = !this.isFlat;
   }
   setTexture(src) {
+    this.invalidate();
     const THREE = this.THREE;
     const old = this.texture;
     const tex = new THREE.Texture(src);
@@ -771,6 +774,13 @@ var PanoEngine = class {
       this.planetD = 0;
     }
   }
+  /** Something changed that the camera does not show: a new image, a cover, labels. */
+  dirty = true;
+  /** The camera and canvas the last frame was drawn for. */
+  lastSig = "";
+  invalidate() {
+    this.dirty = true;
+  }
   lastT = performance.now();
   frame = () => {
     const now = performance.now();
@@ -785,14 +795,23 @@ var PanoEngine = class {
         this.camera.position.set(0, 0, 0);
         this.applyGyro();
       } else this.applyView();
-      this.drawMinimapBox();
-      this.placePins();
     }
+    const fading = !!this.outgoing;
     if (this.outgoing) {
       const k = Math.min(1, (now - this.outgoing.t0) / CROSSFADE_MS);
       const m = this.mesh?.material;
       if (m) m.opacity = k;
       if (k >= 1) this.finishCrossfade();
+    }
+    const xr = this.renderer.xr.isPresenting;
+    const q = this.camera.quaternion;
+    const sig = `${q.x.toFixed(5)},${q.y.toFixed(5)},${q.z.toFixed(5)},${q.w.toFixed(5)},${this.camera.fov.toFixed(3)},${this.planetD.toFixed(4)},${this.canvas.width}x${this.canvas.height}`;
+    if (!xr && !fading && !this.dirty && sig === this.lastSig) return;
+    this.dirty = false;
+    this.lastSig = sig;
+    if (!xr) {
+      this.drawMinimapBox();
+      this.placePins();
     }
     if (this.planetD > 5e-4 && !this.renderer.xr.isPresenting && !this.isFlat && this.texture && this.input) this.renderPlanet();
     else this.renderer.render(this.scene, this.camera);
@@ -954,6 +973,7 @@ var PanoEngine = class {
   }
   /* ---------------------------------------------------- label pins */
   setHotspots(list) {
+    this.invalidate();
     this.hotspots = list;
     this.layers.pins.replaceChildren();
     this.pins = list.map((h, i) => {
@@ -966,8 +986,9 @@ var PanoEngine = class {
       text.textContent = h.text || `Label ${i + 1}`;
       pin.append(text);
       if (this.labelMode === "note") {
-        pin.dataset.open = "1";
-        pin.setAttribute("aria-expanded", "true");
+        pin.dataset.open = "0";
+        pin.setAttribute("aria-expanded", "false");
+        pin.setAttribute("aria-label", h.text || `Label ${i + 1}`);
         pin.onclick = (e) => {
           e.stopPropagation();
           const open = pin.dataset.open !== "1";
@@ -983,6 +1004,17 @@ var PanoEngine = class {
       this.layers.pins.append(pin);
       return pin;
     });
+  }
+  /** Turn to a label and open it: for a list of a photo's points of interest. */
+  showLabel(i) {
+    const h = this.hotspots[i], pin = this.pins[i];
+    if (!h) return;
+    this.touched();
+    this.flyTo(this.viewFor(h, Math.min(this.view.fov, 60)), 900);
+    if (pin?.dataset.kind === "note") {
+      pin.dataset.open = "1";
+      pin.setAttribute("aria-expanded", "true");
+    }
   }
   /** Where to look so a label or blur is centred. */
   viewFor(h, fov = 60) {
@@ -1230,6 +1262,7 @@ var PanoEngine = class {
     return c;
   }
   updateCovers() {
+    this.invalidate();
     const s = this.settings;
     const usable = (p) => p && p.src.width > 0 && p.src.height > 0 ? p : null;
     const img = usable(this.nadirImage);
