@@ -166,10 +166,14 @@ export function derivativeWidths(srcW: number, kind: ResolvedKind): number[] {
 }
 
 /** What the device can take: the ceiling, the GPU's own limit, and 4096 on a
- *  low-memory phone. */
-export function textureCap(maxTextureSize: number, deviceMemory?: number): number {
+ *  low-memory phone. Only Chromium reports deviceMemory; a handheld that does
+ *  not say (every iPhone and iPad, Firefox on Android) gets 4096 too. An
+ *  iPhone's GPU claims 16384, and an 8192 photo is 128 MB decoded, twice over
+ *  while one photo crossfades to the next: Safari kills and reloads the tab. */
+export function textureCap(maxTextureSize: number, deviceMemory?: number, handheld = false): number {
   const cap = Math.min(TEXTURE_CEILING, maxTextureSize || TEXTURE_CEILING);
-  return deviceMemory && deviceMemory <= 4 ? Math.min(cap, 4096) : cap;
+  const small = deviceMemory ? deviceMemory <= 4 : handheld;
+  return small ? Math.min(cap, 4096) : cap;
 }
 
 /** The largest available width that fits the cap, else the smallest. */

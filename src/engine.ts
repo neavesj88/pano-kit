@@ -365,7 +365,7 @@ export class PanoEngine {
     this.raycaster = new THREE.Raycaster();
     this.gyro.q = new THREE.Quaternion();
     this.maxAniso = this.renderer.capabilities.getMaxAnisotropy();
-    this.cap = textureCap(this.renderer.capabilities.maxTextureSize, (navigator as any).deviceMemory);
+    this.cap = textureCap(this.renderer.capabilities.maxTextureSize, (navigator as any).deviceMemory, matchMedia("(pointer: coarse)").matches);
 
     this.resizeObs = new ResizeObserver(() => this.resize());
     this.resizeObs.observe(canvas);
@@ -1253,10 +1253,13 @@ export class PanoEngine {
   private static sensing: Promise<boolean> | null = null;
   /** Whether this device really reports how it is held, found by listening
    *  rather than guessing: only real angles count (desktop Chrome sends one
-   *  event with every angle null). Silence is a no, except on an iPhone or
-   *  iPad, which send nothing until asked from a tap. requestPermission alone
-   *  does not mark one: Chrome has it too (152 on Windows does). Only a yes is
-   *  kept: a page that loaded hidden may not have been sent anything yet. */
+   *  event with every angle null). Silence is a no, except on a handheld whose
+   *  browser asks first (requestPermission): iOS sends nothing until asked
+   *  from a tap, and a Chromium that has requestPermission may hold events
+   *  back the same way. requestPermission alone proves nothing (Chrome 152 on
+   *  a touchscreen PC has it), so the device must also be held: an iPhone or
+   *  iPad, or a coarse primary pointer. Only a yes is kept: a page that loaded
+   *  hidden may not have been sent anything yet. */
   static detectSensors(timeoutMs = 1500): Promise<boolean> {
     if (PanoEngine.sensing) return PanoEngine.sensing;
     const probe = new Promise<boolean>(resolve => {
@@ -1264,7 +1267,7 @@ export class PanoEngine {
       if (!DOE || !PanoEngine.sensorsAvailable()) return resolve(false);
       const ua = navigator.userAgent;
       const apple = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-      const asksFirst = apple && typeof DOE.requestPermission === "function";
+      const asksFirst = typeof DOE.requestPermission === "function" && (apple || matchMedia("(pointer: coarse)").matches);
       const done = (ok: boolean) => {
         clearTimeout(timer);
         window.removeEventListener("deviceorientation", heard);

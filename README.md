@@ -181,6 +181,8 @@ The engine was ported from the rig, where sensors and VR were tested with
 synthetic events only. Confirm on a real phone: the Generic Sensor quaternion
 convention, the no-jump handoff into sensor mode, and the direction of the
 drag-to-nudge-heading. On a Quest 3: 8192 against 4096 textures for judder in VR.
+On an iPhone: that 4096 (what a handheld gets when the browser does not report
+its memory) keeps Safari from reloading the tab; 8192 is suspected of causing it.
 
 ## Licence
 

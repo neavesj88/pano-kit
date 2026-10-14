@@ -88,6 +88,12 @@ describe("derivatives", () => {
     expect(textureCap(4096)).toBe(4096);
     expect(textureCap(16384, 4)).toBe(4096);
     expect(textureCap(16384, 8)).toBe(8192);
+    // An iPhone: a GPU that claims 16384, no deviceMemory, a finger for a pointer.
+    expect(textureCap(16384, undefined, true)).toBe(4096);
+    // A Mac in Safari: no deviceMemory either, but a mouse.
+    expect(textureCap(16384, undefined, false)).toBe(8192);
+    // A big Android tablet in Chrome says how much memory it has, and that wins.
+    expect(textureCap(16384, 8, true)).toBe(8192);
   });
   it("picks the biggest that fits, and the 2048 for first paint", () => {
     expect(pickWidth([8192, 4096, 2048], 4096)).toBe(4096);
