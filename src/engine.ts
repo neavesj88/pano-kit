@@ -1180,7 +1180,7 @@ export class PanoEngine {
    *  mesh, not baked, so changing it needs no re-encode. */
   private placeCover(
     cur: Cover | null, key: string | null, draw: () => HTMLCanvasElement, deg: number, rot: number, layer: number,
-    at?: { yaw: number; pitch: number } | null,
+    at?: { yaw: number; pitch: number } | null, centre?: { x: number; y: number },
   ): Cover | null {
     if (!key) return this.dropCover(cur);
     const THREE = this.THREE;
@@ -1205,13 +1205,21 @@ export class PanoEngine {
       c.mesh.geometry = makeCap(THREE, theta, RADIUS * (0.985 - 0.005 * layer));
       c.theta = theta;
     }
-    // Turned about the vertical, so its top points at yaw rot; then, if it has
-    // somewhere else to be, tilted along the great circle from straight down to
-    // there, which carries its top along without twisting it.
+    // Turned about the vertical, so its top points at yaw rot. Placed somewhere,
+    // its `centre` point is first rolled to straight down (so turns spin about
+    // it), then everything is tilted along the great circle from straight down
+    // to `at`, which carries its top along without twisting it.
+    const down = new THREE.Vector3(0, -1, 0);
     const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -rad(rot));
-    if (at && at.pitch > -89.95) {
-      const tilt = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), lookDir(THREE, at.yaw, at.pitch));
-      turn.premultiply(tilt);
+    if (at) {
+      const r = centre ? Math.hypot(centre.x, centre.y) : 0;
+      if (r > 1e-6) {
+        // Picture x is world x and picture y (down) is world z, as makeCap lays it on.
+        const phi = 2 * Math.atan(r * Math.tan(c.theta / 2));
+        const p = new THREE.Vector3((Math.sin(phi) * centre!.x) / r, -Math.cos(phi), (Math.sin(phi) * centre!.y) / r);
+        turn.multiply(new THREE.Quaternion().setFromUnitVectors(p, down));
+      }
+      if (at.pitch > -89.95) turn.premultiply(new THREE.Quaternion().setFromUnitVectors(down, lookDir(THREE, at.yaw, at.pitch)));
     }
     c.mesh.quaternion.copy(turn);
     c.mesh.visible = !this.isFlat;
@@ -1229,7 +1237,7 @@ export class PanoEngine {
       () => (mode === "image" ? this.drawPicture(img!.src) : this.drawBadge()), this.nadirDeg(), s.nadirRot ?? 0, 1);
     const fig = s.figure ? usable(this.figureImage) : null;
     this.figure = this.placeCover(this.figure, fig && `figure:${fig.serial}`, () => this.drawPicture(fig!.src),
-      s.figure?.deg ?? 0, s.figure?.rot ?? 0, 0, s.figure?.at);
+      s.figure?.deg ?? 0, s.figure?.rot ?? 0, 0, s.figure?.at, s.figure?.centre);
   }
 
   /* ------------------------------------------------------ sensors */

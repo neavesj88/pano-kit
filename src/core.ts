@@ -46,10 +46,13 @@ export interface ViewerSettings {
   /** A picture under the nadir cover (PanoEngine.setFigureImage), sized and turned
    *  on its own: a figure standing in for whoever held the camera, coming out from
    *  under the badge. deg and rot as for the cover, rot about its own centre.
-   *  at: where its centre sits (yaw, pitch); absent, straight down. Whoever held
-   *  the camera out in front stands off to one side of the nadir, not under it.
+   *  at: where it sits (yaw, pitch); absent, its centre straight down. Whoever
+   *  held the camera out in front stands off to one side of the nadir, not under
+   *  it. centre: the point of the picture that `at` places and turns stay on, in
+   *  picture units from its middle (-1 to 1, y down as on a canvas); a figure
+   *  drawn holding the stick at the picture's centre has its body elsewhere.
    *  Null, or no picture: none. */
-  figure?: { deg: number; rot: number; at?: { yaw: number; pitch: number } | null } | null;
+  figure?: { deg: number; rot: number; at?: { yaw: number; pitch: number } | null; centre?: { x: number; y: number } } | null;
   minimap: boolean;
 }
 
