@@ -1296,13 +1296,20 @@ export class PanoEngine {
   async startSensors(): Promise<boolean> {
     const DOE = (window as any).DeviceOrientationEvent;
     if (DOE && typeof DOE.requestPermission === "function") {
+      // Say what the browser actually answered: a stored "denied" and a refused
+      // request (no tap behind it, a blocked site) need different fixes.
+      const refused = (why: string) => this.cb.onToast?.(
+        `Motion access was refused (${why}). Allow motion and orientation for this site in the browser's settings, reload, and tap Sensors again.`,
+        "err",
+      );
       try {
-        if ((await DOE.requestPermission()) !== "granted") {
-          this.cb.onToast?.("Motion permission was refused.", "err");
+        const answer = await DOE.requestPermission();
+        if (answer !== "granted") {
+          refused(String(answer));
           return false;
         }
-      } catch {
-        this.cb.onToast?.("Motion permission was refused.", "err");
+      } catch (e: any) {
+        refused(e?.name || "no answer");
         return false;
       }
     }
