@@ -20,6 +20,7 @@ import {
   type Blur, type Hotspot, type ResolvedKind, type View, type ViewerSettings,
 } from "./core";
 import { bakeTo } from "./bake";
+import { DRAG_DEG, SNAP_DEG, pointedLabel, snapTurn, wrapLines, yawOf, type Vec3 } from "./vr";
 
 export type Three = typeof T;
 const threeLoads = new Map<string, Promise<Three>>();
@@ -333,6 +334,22 @@ export class PanoEngine {
   private readonly labelMode: "fly" | "note";
   private readonly background: number;
   private xrSession: XRSession | null = null;
+  /** The headset view: its turn (thumbstick snaps, trigger drags), the trigger
+   *  press being dragged, and the labels drawn into the scene, since a page's
+   *  own elements never show inside a headset. */
+  private vr = {
+    base: null as XRReferenceSpace | null,
+    yaw: 0,
+    armed: new Map<XRInputSource, boolean>(),
+    drag: null as null | { source: XRInputSource; startRay: number; startYaw: number; swung: number },
+    labels: null as T.Group | null,
+    dots: [] as (T.Sprite | null)[],
+    cards: [] as (T.Sprite | null)[],
+    dirs: [] as (Vec3 | null)[],
+    dotSize: 1,
+    open: new Set<number>(),
+    dotTex: null as T.Texture | null,
+  };
   private disposed = false;
   private readonly reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -389,6 +406,8 @@ export class PanoEngine {
     window.removeEventListener("keydown", this.onKey);
     navigator.xr?.removeEventListener?.("sessiongranted", this.onSessionGranted);
     this.clearMesh();
+    this.dropVrLabels();
+    this.vr.dotTex?.dispose();
     this.texture?.dispose();
     this.finishCrossfade();
     if (this.planet) {
@@ -531,6 +550,7 @@ export class PanoEngine {
     this.shown = img;
     this.setTexture(img);
     this.setHotspots(input.hotspots);
+    if (this.renderer.xr.isPresenting) this.faceStartInVR();
     this.layers.minimap.hidden = !(this.settings.minimap && !this.isFlat);
     if (opts.initialView) {
       Object.assign(this.view, opts.initialView);
@@ -758,6 +778,7 @@ export class PanoEngine {
         this.applyGyro();
       } else this.applyView();
     }
+    if (this.renderer.xr.isPresenting) this.vrTick();
     const fading = !!this.outgoing;
     if (this.outgoing) {
       const k = Math.min(1, (now - this.outgoing.t0) / CROSSFADE_MS);
@@ -964,6 +985,8 @@ export class PanoEngine {
       this.layers.pins.append(pin);
       return pin;
     });
+    this.vr.open.clear();
+    if (this.renderer.xr.isPresenting) this.buildVrLabels();
   }
 
   /** Turn to a label and open it: for a list of a photo's points of interest. */
@@ -1427,13 +1450,41 @@ export class PanoEngine {
       if (this.gyro.on) this.stopSensors(true);
       s.addEventListener("end", () => {
         this.xrSession = null;
+        this.vr.base = null;
+        this.vr.drag = null;
+        this.vr.armed.clear();
+        // The next session starts from its own reference space, not this one's turn.
+        this.renderer.xr.setReferenceSpace(null as unknown as XRReferenceSpace);
+        this.dropVrLabels();
         Object.assign(this.view, this.start);
         this.resize();
         this.cb.onVR?.(false);
       });
-      s.addEventListener("select", () => this.cb.onStep?.(1));
+      // The trigger drags the view round like a mouse; a press that hardly
+      // turned it is a click: it opens or closes the label pointed at, else
+      // goes to the next photo. Grip goes back. The thumbsticks snap-turn (vrTick).
+      s.addEventListener("selectstart", e => {
+        const ray = this.vr.base && this.rayOf(e.frame, e.inputSource, this.vr.base);
+        if (ray) this.vr.drag = { source: e.inputSource, startRay: yawOf(ray), startYaw: this.vr.yaw, swung: 0 };
+      });
+      s.addEventListener("select", e => {
+        const d = this.vr.drag;
+        if (d && d.source === e.inputSource && d.swung > DRAG_DEG) return;
+        const space = this.renderer.xr.getReferenceSpace();
+        const ray = space && this.rayOf(e.frame, e.inputSource, space);
+        const i = ray ? pointedLabel(ray, this.vr.dirs) : -1;
+        if (i >= 0) {
+          if (!this.vr.open.delete(i)) this.vr.open.add(i);
+          return;
+        }
+        this.cb.onStep?.(1);
+      });
+      s.addEventListener("selectend", e => { if (this.vr.drag?.source === e.inputSource) this.vr.drag = null; });
       s.addEventListener("squeeze", () => this.cb.onStep?.(-1));
       await this.renderer.xr.setSession(s);
+      this.vr.base = this.renderer.xr.getReferenceSpace();
+      this.faceStartInVR();
+      this.buildVrLabels();
       this.cb.onVR?.(true);
     } catch (e: any) {
       this.cb.onToast?.(`Could not start VR: ${e?.message ?? e}`, "err");
@@ -1442,5 +1493,181 @@ export class PanoEngine {
 
   get presentingVR() {
     return this.renderer.xr.isPresenting;
+  }
+
+  /* ------------------------------------------------- in the headset */
+
+  /** Turn the headset view to vr.yaw (degrees, positive right) by offsetting the
+   *  session's own reference space, so head tracking is exactly as it was. A
+   *  pose in an offset space is the base pose with the offset undone, so
+   *  turning the view right by a takes a rotation of +a about y. */
+  private applyVrYaw() {
+    const base = this.vr.base;
+    if (!base) return;
+    const h = rad(this.vr.yaw) / 2;
+    this.renderer.xr.setReferenceSpace(base.getOffsetReferenceSpace(new XRRigidTransform(undefined, { x: 0, y: Math.sin(h), z: 0, w: Math.cos(h) })));
+  }
+
+  /** Each photo opens facing its start view, wherever the headset was turned. */
+  private faceStartInVR() {
+    this.vr.yaw = wrap180(this.start.yaw);
+    this.vr.drag = null;
+    this.applyVrYaw();
+  }
+
+  /** Where a controller points (its -z), in `space`. */
+  private rayOf(frame: XRFrame, source: XRInputSource, space: XRReferenceSpace): Vec3 | null {
+    const pose = frame.getPose(source.targetRaySpace, space);
+    if (!pose) return null;
+    const { x, y, z, w } = pose.transform.orientation;
+    return { x: -2 * (x * z + w * y), y: -2 * (y * z - w * x), z: -(1 - 2 * (x * x + y * y)) };
+  }
+
+  private vrTick() {
+    const frame = this.renderer.xr.getFrame() as XRFrame | null;
+    const s = this.xrSession, base = this.vr.base;
+    if (!frame || !s || !base) return;
+    let turned = false;
+    for (const src of s.inputSources) {
+      const ax = src.gamepad?.axes;
+      if (!ax || ax.length < 4) continue; // xr-standard: the thumbstick is axes 2 and 3
+      const st = snapTurn(ax[2], this.vr.armed.get(src) ?? true);
+      this.vr.armed.set(src, st.armed);
+      if (st.turn) {
+        this.vr.yaw = wrap180(this.vr.yaw + st.turn * SNAP_DEG);
+        turned = true;
+      }
+    }
+    const d = this.vr.drag;
+    if (d) {
+      // Measured in the base space, which the turn does not move, so the drag cannot feed on itself.
+      const ray = this.rayOf(frame, d.source, base);
+      if (ray) {
+        const delta = wrap180(yawOf(ray) - d.startRay);
+        d.swung = Math.max(d.swung, Math.abs(delta));
+        // The photo follows the hand, as it does under a mouse.
+        this.vr.yaw = wrap180(d.startYaw - delta);
+        turned = true;
+      }
+    }
+    if (turned) this.applyVrYaw();
+    if (!this.vr.labels) return;
+    // A label's card shows while a controller points at its dot, or once clicked open.
+    const space = this.renderer.xr.getReferenceSpace();
+    const hovered = new Set<number>();
+    if (space) {
+      for (const src of s.inputSources) {
+        if (src.targetRayMode !== "tracked-pointer") continue;
+        const ray = this.rayOf(frame, src, space);
+        const i = ray ? pointedLabel(ray, this.vr.dirs) : -1;
+        if (i >= 0) hovered.add(i);
+      }
+    }
+    this.vr.cards.forEach((c, i) => { if (c) c.visible = hovered.has(i) || this.vr.open.has(i); });
+    this.vr.dots.forEach((dot, i) => { dot?.scale.setScalar(this.vr.dotSize * (hovered.has(i) ? 1.6 : 1)); });
+  }
+
+  /** The labels as sprites in the scene, for the headset: a dot each, and a card
+   *  of text above it that shows when pointed at. Labels on a flat photo have
+   *  no direction and are left out. */
+  private buildVrLabels() {
+    this.dropVrLabels();
+    if (!this.renderer.xr.isPresenting) return;
+    const THREE = this.THREE;
+    const at = RADIUS * 0.9;
+    const span = (degrees: number) => 2 * at * Math.tan(rad(degrees) / 2);
+    this.vr.dotTex ??= this.vrDotTexture();
+    this.vr.dotSize = span(1.6);
+    const g = new THREE.Group();
+    this.vr.dirs = this.hotspots.map(h => ("u" in h ? null : lookDir(THREE, h.yaw, h.pitch)));
+    this.vr.dots = [];
+    this.vr.cards = [];
+    this.hotspots.forEach((h, i) => {
+      const dir = this.vr.dirs[i];
+      if (!dir) {
+        this.vr.dots.push(null);
+        this.vr.cards.push(null);
+        return;
+      }
+      const pos = new THREE.Vector3(dir.x, dir.y, dir.z).multiplyScalar(at);
+      const dot = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.vr.dotTex, depthTest: false, transparent: true }));
+      dot.scale.setScalar(this.vr.dotSize);
+      dot.position.copy(pos);
+      dot.renderOrder = 10;
+      const card = this.vrCard(h.text || `Label ${i + 1}`);
+      card.sprite.scale.set(span(24), span(24) * card.aspect, 1);
+      card.sprite.center.set(0.5, -0.12); // just above its dot
+      card.sprite.position.copy(pos);
+      card.sprite.visible = false;
+      card.sprite.renderOrder = 11;
+      g.add(dot, card.sprite);
+      this.vr.dots.push(dot);
+      this.vr.cards.push(card.sprite);
+    });
+    this.vr.labels = g;
+    this.scene.add(g);
+  }
+
+  private dropVrLabels() {
+    const g = this.vr.labels;
+    if (!g) return;
+    this.scene.remove(g);
+    g.traverse(o => {
+      const m = (o as T.Sprite).material as T.SpriteMaterial | undefined;
+      if (!m) return;
+      if (m.map && m.map !== this.vr.dotTex) m.map.dispose();
+      m.dispose();
+    });
+    this.vr.labels = null;
+    this.vr.dots = [];
+    this.vr.cards = [];
+    this.vr.dirs = [];
+  }
+
+  private vrDotTexture(): T.Texture {
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    const ctx = c.getContext("2d")!;
+    ctx.beginPath();
+    ctx.arc(64, 64, 52, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(0,0,0,.45)";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(64, 64, 40, 0, Math.PI * 2);
+    ctx.fillStyle = this.accent;
+    ctx.fill();
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = "#ffffff";
+    ctx.stroke();
+    const t = new this.THREE.CanvasTexture(c);
+    t.colorSpace = this.THREE.SRGBColorSpace;
+    return t;
+  }
+
+  /** A label's text on a dark card, as a sprite, and its height over its width. */
+  private vrCard(text: string): { sprite: T.Sprite; aspect: number } {
+    const W = 1024, pad = 40, size = 46, lineH = 60;
+    const c = document.createElement("canvas");
+    const ctx = c.getContext("2d")!;
+    const font = `600 ${size}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.font = font;
+    const lines = wrapLines(text, W - pad * 2, s => ctx.measureText(s).width, 5);
+    c.width = W;
+    c.height = pad * 2 + Math.max(1, lines.length) * lineH;
+    ctx.font = font; // a resize clears the context's state
+    ctx.fillStyle = "rgba(10,8,18,.92)";
+    ctx.strokeStyle = this.accent;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.roundRect(3, 3, W - 6, c.height - 6, 28);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#ffffff";
+    ctx.textBaseline = "middle";
+    lines.forEach((l, i) => ctx.fillText(l, pad, pad + lineH * i + lineH / 2));
+    const t = new this.THREE.CanvasTexture(c);
+    t.colorSpace = this.THREE.SRGBColorSpace;
+    t.anisotropy = this.maxAniso;
+    return { sprite: new this.THREE.Sprite(new this.THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true })), aspect: c.height / W };
   }
 }

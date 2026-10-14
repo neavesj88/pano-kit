@@ -13,9 +13,10 @@ First used by neaves.au `/360`. Ported from `pano-test-rig.html` and its brief.
 |---|---|---|---|
 | `core` | anywhere | Dated folders (`parseFolder`: `DD_MM_YYYY_place` into a date and label), views and `#view=` links, panorama-or-flat, location parsing (typed coordinates and every shape of Google Maps link), outbound map links, the derivative ladder, texture limits, blur-cap geometry, gallery ordering and day grouping, slugs, storage keys | nothing |
 | `bake` | browser | Blur regions painted into a copy of a photo: exact spherical caps on equirects, circles on flat photos | DOM canvas |
-| `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (trigger next, grip previous); partial spheres from GPano; flat photos as a virtual print; openings (fly in; a true stereographic little planet that unfolds into the view; a 330° spin; none); crossfade between photos; auto-rotate at any speed; label pins; minimap; a nadir cover (badge disk, or any picture, turned and sized per photo); progressive textures; `renderStartThumb` | three.js r186, loaded by URL |
+| `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (thumbstick snap-turns, trigger drags the view round or clicks: a label open, else the next photo; grip previous; labels drawn into the scene as dots with cards; each photo opens facing its start view); partial spheres from GPano; flat photos as a virtual print; openings (fly in; a true stereographic little planet that unfolds into the view; a 330° spin; none); crossfade between photos; auto-rotate at any speed; label pins; minimap; a nadir cover (badge disk, or any picture, turned and sized per photo); progressive textures; `renderStartThumb` | three.js r186, loaded by URL |
 | `derive` | browser | `fingerprint` (SHA-256), `readPhotoMeta` (EXIF date and camera, GPS, GPano), `makeRungs` (each size, blurs baked), `mapStrip`, `putSigned` (PUT with progress) | `exifreader` |
 | `timeline` | anywhere | `parseTimeline` (a Google Maps Timeline export: the phone's Timeline.json, the bare geo: array, Takeout's Records.json and Semantic Location History) and `locateAt` (where the phone was when a photo was taken, clock to clock), for cameras with no GPS | nothing |
+| `vr` | anywhere | The headset controls' judgement, pure: `snapTurn`, `pointedLabel`, `yawOf`, `wrapLines` | nothing |
 | `s3` | server | `presign` (short-lived PUT/GET), `listVersions`, `purgeObject` (every version), `deleteVersion`, `deleteObject`, `objectUrl`, `publicUrl`, `regionFromEndpoint` | `aws4fetch` |
 
 ## Using it
@@ -181,7 +182,9 @@ also avoid `backdrop-filter` over the canvas: the browser re-blurs it every fram
 The engine was ported from the rig, where sensors and VR were tested with
 synthetic events only. Confirm on a real phone: the Generic Sensor quaternion
 convention, the no-jump handoff into sensor mode, and the direction of the
-drag-to-nudge-heading. On a Quest 3: 8192 against 4096 textures for judder in VR.
+drag-to-nudge-heading. On a Quest 3: 8192 against 4096 textures for judder in VR, and the headset
+controls (snap-turn direction, drag direction, the 3° drag-or-click line,
+label cards' size and reach): written against the WebXR spec, not yet worn.
 On an iPhone: that 4096 (what a handheld gets when the browser does not report
 its memory) keeps Safari from reloading the tab; 8192 is suspected of causing it.
 
