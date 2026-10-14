@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pano-kit demo</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05030a; color: #fff; font: 14px system-ui, sans-serif; overflow: hidden; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #pins { position: fixed; inset: 0; pointer-events: none; }
+  #pins > * { pointer-events: auto; }
+  .pano-pin { position: absolute; transform: translate(-50%, -50%); padding: 6px 12px; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; border: 1px solid rgba(255,255,255,.2); white-space: nowrap; }
+  .pano-pin[data-state="hidden"] { opacity: 0; pointer-events: none; }
+  .pano-pin[data-state="far"] { opacity: .55; }
+  #mm { position: fixed; right: 12px; top: 12px; width: 280px; aspect-ratio: 2 / 1; border: 1px solid rgba(255,255,255,.2); border-radius: 10px; overflow: hidden; }
+  #mm canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #bar { position: fixed; left: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { background: rgba(0,0,0,.6); color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 10px; padding: 10px 14px; font: inherit; cursor: pointer; }
+  #status { background: rgba(0,0,0,.6); padding: 8px 12px; border-radius: 10px; }
+  #thumbOut { position: fixed; left: 12px; top: 12px; width: 240px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="pins"></div>
+<div id="mm"><canvas id="mmBase" width="560" height="280"></canvas><canvas id="mmBox" width="560" height="280"></canvas></div>
+<img id="thumbOut" alt="">
+<div id="bar">
+  <button id="start">Start view</button>
+  <button id="planet">Little planet</button>
+  <button id="thumb">Render thumbnail</button>
+  <span id="status">loading…</span>
+</div>
+<script type="module" src="./demo.js"></script>
+</body>
+</html>
