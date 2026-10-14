@@ -28,8 +28,9 @@ export type Hotspot = { yaw: number; pitch: number; text: string } | { u: number
 
 /** How the viewer opens a photo and dresses it; one set for a whole gallery. */
 export interface ViewerSettings {
-  /** fly: ease in to the start view. planet: little planet, then unfold. none: straight there. */
-  opening: "fly" | "planet" | "none";
+  /** fly: ease in to the start view. planet: a little planet unfolding into it.
+   *  spin: one sweeping turn round the scene. none: straight there. */
+  opening: "fly" | "planet" | "spin" | "none";
   /** disk: cover the nadir (the tripod hole) with a badge. */
   nadir: "none" | "disk";
   /** Angular radius of the nadir disk, degrees. */
@@ -275,4 +276,72 @@ export const panoKeys = {
 /** Only these may be asked for by name when signing an upload. */
 export function isAllowedAssetName(name: string): boolean {
   return name === "map" || name === "thumb" || name === "original" || /^\d{3,5}$/.test(name);
+}
+
+/* --------------------------------------------------------- dated folders */
+
+export interface DatedFolder {
+  /** The folder name as stored: safe characters only. */
+  key: string;
+  /** YYYY-MM-DD when the name starts with a date, else null. */
+  date: string | null;
+  /** The rest of the name, e.g. "rome_colosseum_forum". */
+  place: string;
+  /** For people: "Rome Colosseum Forum". */
+  label: string;
+}
+
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A folder name made safe to store and show: letters, digits, _ - and spaces, at most 80. */
+export function folderKey(name: string): string {
+  return name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim()
+    .replace(/[^A-Za-z0-9_\- ]+/g, "_").replace(/\s*_[\s_]*/g, "_").replace(/\s+/g, " ")
+    .replace(/^[_ -]+|[_ -]+$/g, "").slice(0, 80);
+}
+
+/**
+ * Folders named for a day and a place, the way a trip's photos get sorted:
+ * DD_MM_YYYY_place (04_10_2026_paris) or YYYY-MM-DD_place. Anything else is a
+ * plain folder with no date. The date matters most when a photo carries no
+ * camera metadata: it is then the only thing that puts the photo on its day.
+ */
+export function parseFolder(name: string): DatedFolder {
+  const key = folderKey(name);
+  const valid = (y: number, m: number, d: number) => {
+    const t = new Date(Date.UTC(y, m - 1, d));
+    return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+  };
+  let date: string | null = null;
+  let rest = key;
+  const dmy = key.match(/^(\d{2})[_-](\d{2})[_-](\d{4})(?:[_ -]+(.*))?$/);
+  const ymd = key.match(/^(\d{4})-(\d{2})-(\d{2})(?:[_ -]+(.*))?$/);
+  if (dmy && valid(+dmy[3], +dmy[2], +dmy[1])) {
+    date = `${dmy[3]}-${dmy[2]}-${dmy[1]}`;
+    rest = dmy[4] ?? "";
+  } else if (ymd && valid(+ymd[1], +ymd[2], +ymd[3])) {
+    date = `${ymd[1]}-${ymd[2]}-${ymd[3]}`;
+    rest = ymd[4] ?? "";
+  }
+  const words = rest.split(/[_ -]+/).filter(Boolean);
+  // A dated folder's place is a lowercase slug, so it is title-cased; a folder
+  // named by hand is shown as it was typed.
+  const label = date
+    ? words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
+    : key.replace(/_/g, " ");
+  return { key, date, place: words.join("_"), label };
+}
+
+/** "4 Oct 2026", from YYYY-MM-DD. */
+export function shortDate(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return `${d} ${MONTHS_SHORT[m - 1]} ${y}`;
+}
+
+/** Dated folders in date order, then undated ones by name. */
+export function compareFolders(a: string, b: string): number {
+  const fa = parseFolder(a), fb = parseFolder(b);
+  if (fa.date && fb.date && fa.date !== fb.date) return fa.date < fb.date ? -1 : 1;
+  if (!!fa.date !== !!fb.date) return fa.date ? -1 : 1;
+  return fa.key.localeCompare(fb.key);
 }

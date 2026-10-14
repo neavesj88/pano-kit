@@ -11,13 +11,13 @@ import { DEFAULT_VIEWER_SETTINGS, type Hotspot } from "../src/core";
 const THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-function testSphere(w = 4096, h = 2048): string {
+function testSphere(w = 4096, h = 2048, tint = "#1e3a8a"): string {
   const c = document.createElement("canvas");
   c.width = w;
   c.height = h;
   const x = c.getContext("2d")!;
   const g = x.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, "#1e3a8a");
+  g.addColorStop(0, tint);
   g.addColorStop(0.5, "#0f172a");
   g.addColorStop(1, "#3f2a14");
   x.fillStyle = g;
@@ -76,6 +76,11 @@ async function main() {
 
   $("start").onclick = () => engine.toStart();
   $("planet").onclick = () => { engine.setSettings({ ...DEFAULT_VIEWER_SETTINGS, opening: "planet", nadir: "disk" }); engine.reveal(); };
+  $("spin").onclick = () => { engine.setSettings({ ...DEFAULT_VIEWER_SETTINGS, opening: "spin", nadir: "disk" }); engine.reveal(); };
+  // A second sphere in another colour, to watch the crossfade between photos.
+  const other = { ...input, sources: [{ width: 4096, url: testSphere(4096, 2048, "#7c2d12") }], hotspots: [] };
+  let flip = false;
+  $("next").onclick = () => { flip = !flip; void engine.open(flip ? other : input, { reveal: true }); };
   $("thumb").onclick = async () => {
     const img = new Image();
     img.src = url;

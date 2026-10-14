@@ -76,6 +76,64 @@ const RADIUS = 500;
 const FLAT_D = 300;    // a flat photo hangs 300 units ahead...
 const FLAT_VFOV = 60;  // ...and spans 60° of height: a big print, in VR too
 
+/* The little planet, done properly: every pixel is a ray from a point d behind
+ * the sphere's centre. d = 1 is a stereographic projection (the "tiny planet"
+ * with the whole scene wrapped into a ball), d = 0 is an ordinary rectilinear
+ * view, and easing d from 1 to 0 unfolds one into the other. A full-screen
+ * quad; the sphere mesh takes over once d reaches 0, where the two agree. */
+const PLANET_VERT = `
+varying vec2 vUv;
+void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+`;
+const PLANET_FRAG = `
+precision highp float; // mediump shows artefacts on Quest 3
+uniform sampler2D map;
+uniform vec4 crop;     // the photo's place in the full sphere: left, top, width, height (0..1)
+uniform float d;       // projection centre behind the sphere centre: 0 rectilinear, 1 stereographic
+uniform mat3 rot;      // camera to world
+uniform float tanHalf; // tan(vertical fov / 2)
+uniform float aspect;
+uniform vec3 bg;
+uniform sampler2D disk; // the nadir disk, so it does not pop in when the planet hands over to the mesh
+uniform float diskOn;
+uniform float diskCos;  // the disk sits on the plane y = -cos(nadir angle)...
+uniform float diskR;    // ...with this radius (unit sphere), as the mesh does
+varying vec2 vUv;
+const float PI = 3.14159265358979;
+void main() {
+  vec2 p = (vUv * 2.0 - 1.0) * vec2(aspect, 1.0) * tanHalf;
+  vec3 dir = normalize(vec3(p, -1.0));
+  vec3 o = vec3(0.0, 0.0, d);
+  float b = dot(o, dir);
+  float t = -b + sqrt(max(b * b - (d * d - 1.0), 0.0));
+  vec3 w = rot * normalize(o + t * dir);
+  float u = 0.5 + atan(w.x, -w.z) / (2.0 * PI);
+  float v = 0.5 + asin(clamp(w.y, -1.0, 1.0)) / PI;
+  vec2 img = vec2((u - crop.x) / crop.z, ((1.0 - v) - crop.y) / crop.w);
+  vec2 uv = vec2(img.x, 1.0 - img.y);
+  // Behind the viewer u jumps from 1 to 0; a derivative across that jump picks
+  // the smallest mipmap and draws a line. Use the smaller of two gradients.
+  vec2 dx = dFdx(uv), dy = dFdy(uv);
+  vec2 uw = vec2(fract(uv.x + 0.5), uv.y);
+  vec2 dx2 = dFdx(uw), dy2 = dFdy(uw);
+  if (dot(dx2, dx2) + dot(dy2, dy2) < dot(dx, dx) + dot(dy, dy)) { dx = dx2; dy = dy2; }
+  bool inside = img.x >= 0.0 && img.x <= 1.0 && img.y >= 0.0 && img.y <= 1.0;
+  vec4 col = inside ? textureGrad(map, uv, dx, dy) : vec4(bg, 1.0);
+  if (diskOn > 0.5 && w.y < 0.0) {
+    vec2 q = vec2(w.x, w.z) * (-diskCos / w.y); // where the ray meets the disk's plane
+    if (length(q) < diskR) {
+      vec4 dc = texture(disk, vec2(q.x / diskR, -q.y / diskR) * 0.5 + 0.5);
+      col = vec4(mix(col.rgb, dc.rgb, dc.a), 1.0);
+    }
+  }
+  gl_FragColor = col;
+  #include <colorspace_fragment>
+}
+`;
+/** How wide the little planet starts: 150° vertical, about 60° above the horizon at the edges. */
+const PLANET_FOV = 150;
+const CROSSFADE_MS = 700;
+
 const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const rad = (d: number) => (d * Math.PI) / 180;
@@ -194,10 +252,16 @@ export class PanoEngine {
 
   view: View = { ...DEFAULT_VIEW };
   private start: View = { ...DEFAULT_VIEW };
-  private lift = 0; // 0: camera at the centre; 1: near the zenith looking down (little planet)
-  private anim: { active: boolean; t0: number; dur: number; from: View; to: View; lift?: { from: number; to: number }; ease?: (t: number) => number } =
+  /** 1: a true little planet; 0: an ordinary view; between: the unfold. */
+  private planetD = 0;
+  private planet: { scene: T.Scene; mesh: T.Mesh; mat: T.ShaderMaterial } | null = null;
+  /** The previous photo, fading out under the new one. */
+  private outgoing: { mesh: T.Mesh; texture: T.Texture | null; t0: number } | null = null;
+  private anim: { active: boolean; t0: number; dur: number; from: View; to: View; planet?: { from: number; to: number }; ease?: (t: number) => number } =
     { active: false, t0: 0, dur: 0, from: DEFAULT_VIEW, to: DEFAULT_VIEW };
   private autoRotate = false;
+  private rotateSpeed = 1.5;   // degrees a second
+  private rotateIdleMs = 3000; // how long untouched before it starts
   private lastInteraction = performance.now();
   private pointers = new Map<number, { x: number; y: number }>();
   private lastPinch = 0;
@@ -209,6 +273,7 @@ export class PanoEngine {
   private settings: ViewerSettings = { ...DEFAULT_VIEWER_SETTINGS };
   private readonly accent: string;
   private readonly badge: EngineOptions["badge"];
+  private readonly background: number;
   private xrSession: XRSession | null = null;
   private disposed = false;
   private readonly reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -229,12 +294,13 @@ export class PanoEngine {
     this.THREE = THREE;
     this.accent = options.accent ?? "#e879f9";
     this.badge = options.badge === undefined ? null : options.badge;
+    this.background = options.background ?? 0x05030a;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.xr.enabled = true;
     this.renderer.xr.setReferenceSpaceType("local");
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(options.background ?? 0x05030a);
+    this.scene.background = new THREE.Color(this.background);
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1100);
     this.scene.add(this.camera);
     this.raycaster = new THREE.Raycaster();
@@ -265,6 +331,12 @@ export class PanoEngine {
     navigator.xr?.removeEventListener?.("sessiongranted", this.onSessionGranted);
     this.clearMesh();
     this.texture?.dispose();
+    this.finishCrossfade();
+    if (this.planet) {
+      this.planet.mesh.geometry.dispose();
+      this.planet.mat.dispose();
+      this.planet = null;
+    }
     this.disk?.geometry.dispose();
     (this.disk?.material as T.Material | undefined)?.dispose();
     this.diskTex?.dispose();
@@ -297,6 +369,39 @@ export class PanoEngine {
     this.mesh = null;
   }
 
+  /** Keep the current photo on screen to fade out under the next one. */
+  private retireCurrent() {
+    this.finishCrossfade();
+    if (!this.mesh || this.reducedMotion) {
+      this.clearMesh();
+      this.texture?.dispose();
+      this.texture = null;
+      return;
+    }
+    this.mesh.renderOrder = 0;
+    this.outgoing = { mesh: this.mesh, texture: this.texture, t0: performance.now() };
+    this.mesh = null;
+    this.texture = null;
+  }
+
+  /** End a crossfade: drop the old photo and make the new one opaque again. */
+  private finishCrossfade() {
+    const o = this.outgoing;
+    if (!o) return;
+    this.outgoing = null;
+    this.scene.remove(o.mesh);
+    o.mesh.geometry.dispose();
+    (o.mesh.material as T.Material).dispose();
+    o.texture?.dispose();
+    const m = this.mesh?.material as T.MeshBasicMaterial | undefined;
+    if (m) {
+      m.transparent = false;
+      m.opacity = 1;
+      m.depthWrite = true;
+      m.needsUpdate = true;
+    }
+  }
+
   private build(input: PanoInput) {
     const THREE = this.THREE;
     this.clearMesh();
@@ -309,7 +414,9 @@ export class PanoEngine {
     } else {
       geo = makeSphere(THREE, sphereParams(input));
     }
-    this.mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: this.texture }));
+    const fading = !!this.outgoing;
+    this.mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: this.texture, transparent: fading, opacity: fading ? 0 : 1, depthWrite: !fading }));
+    this.mesh.renderOrder = 1;
     if (this.isFlat) this.mesh.position.set(0, 0, -FLAT_D);
     else this.mesh.rotation.y = -Math.PI / 2;
     this.scene.add(this.mesh);
@@ -358,8 +465,7 @@ export class PanoEngine {
       return;
     }
     if (token !== this.loadToken || this.disposed) return;
-    this.texture?.dispose();
-    this.texture = null;
+    this.retireCurrent();
     this.build(input);
     this.shown = img;
     this.setTexture(img);
@@ -368,11 +474,11 @@ export class PanoEngine {
     if (opts.initialView) {
       Object.assign(this.view, opts.initialView);
       this.anim.active = false;
-      this.lift = 0;
+      this.planetD = 0;
     } else if (opts.reveal && !this.renderer.xr.isPresenting) this.reveal();
     else {
       Object.assign(this.view, this.start);
-      this.lift = 0;
+      this.planetD = 0;
     }
     this.cb.onLoaded?.({ width: first!, final: best === first });
 
@@ -451,9 +557,9 @@ export class PanoEngine {
     if (this.isFlat) {
       this.view.yaw = clamp(this.view.yaw, -70, 70);
       this.view.pitch = clamp(this.view.pitch, -50, 50);
-      this.lift = 0;
+      this.planetD = 0;
     }
-    this.camera.position.set(0, RADIUS * 0.94 * this.lift, 0);
+    this.camera.position.set(0, 0, 0);
     const dir = lookDir(this.THREE, this.view.yaw, clamp(this.view.pitch, -89, 89)).add(this.camera.position);
     this.camera.lookAt(dir);
     if (this.camera.fov !== this.view.fov) {
@@ -478,26 +584,34 @@ export class PanoEngine {
     this.flyTo({ ...this.start }, dur);
   }
 
-  /** The opening: fly in, little planet, or straight there. */
+  /** The opening: fly in, little planet, spin, or straight there. */
   reveal() {
     const s = this.start;
+    this.planetD = 0;
     if (this.reducedMotion || this.settings.opening === "none") {
       Object.assign(this.view, s);
       this.anim.active = false;
-      this.lift = 0;
       return;
     }
     if (this.settings.opening === "planet" && !this.isFlat) {
-      // Lifted towards the zenith looking straight down with a wide view, then it settles into the sphere.
-      Object.assign(this.view, { yaw: s.yaw + 40, pitch: -89, fov: 100 });
-      this.lift = 1;
-      this.flyTo({ ...s }, 2600);
-      this.anim.lift = { from: 1, to: 0 };
-      this.anim.ease = easeInOut;
+      // The whole scene as a small round world seen from above, unfolding into the start view.
+      const from = { yaw: s.yaw + 60, pitch: -89.9, fov: PLANET_FOV };
+      Object.assign(this.view, from);
+      this.planetD = 1;
+      this.anim = {
+        active: true, t0: performance.now(), dur: 3000, from: { ...from },
+        to: { ...s, yaw: from.yaw + wrap180(s.yaw - from.yaw) }, planet: { from: 1, to: 0 }, ease: easeInOut,
+      };
+      return;
+    }
+    if (this.settings.opening === "spin" && !this.isFlat) {
+      // One sweeping turn round the whole scene, settling on the start view.
+      const from = { yaw: s.yaw - 330, pitch: s.pitch - 4, fov: Math.min(FOV_MAX, s.fov + 20) };
+      Object.assign(this.view, from);
+      this.anim = { active: true, t0: performance.now(), dur: 3600, from: { ...from }, to: { ...s }, ease: easeInOut };
       return;
     }
     Object.assign(this.view, { yaw: s.yaw - 10, pitch: s.pitch + 3, fov: Math.max(35, s.fov * 0.8) });
-    this.lift = 0;
     this.flyTo({ ...s }, 1600);
   }
 
@@ -510,8 +624,11 @@ export class PanoEngine {
     this.setFov(this.view.fov + delta);
   }
 
-  setAutoRotate(on: boolean) {
+  /** Slow turning when left alone. Defaults: 1.5°/s after 3 s idle; a tour wants faster and sooner. */
+  setAutoRotate(on: boolean, opts: { speed?: number; idleMs?: number } = {}) {
     this.autoRotate = on;
+    this.rotateSpeed = opts.speed ?? 1.5;
+    this.rotateIdleMs = opts.idleMs ?? 3000;
     if (on && this.gyro.on) this.stopSensors(true);
   }
 
@@ -519,8 +636,13 @@ export class PanoEngine {
     this.lastInteraction = performance.now();
     if (this.anim.active) {
       this.anim.active = false;
-      this.anim.lift = undefined;
-      this.lift = 0;
+      this.anim.planet = undefined;
+      // Interrupted mid-unfold: snap to an ordinary view rather than freeze half a planet.
+      if (this.planetD > 0) {
+        this.planetD = 0;
+        this.view.fov = clamp(this.view.fov, FOV_MIN, FOV_MAX);
+        this.view.pitch = clamp(this.view.pitch, -89, 89);
+      }
     }
     this.cb.onInteract?.();
   }
@@ -533,13 +655,13 @@ export class PanoEngine {
     this.view.yaw = a.from.yaw + (a.to.yaw - a.from.yaw) * k;
     this.view.pitch = a.from.pitch + (a.to.pitch - a.from.pitch) * k;
     this.view.fov = a.from.fov + (a.to.fov - a.from.fov) * k;
-    if (a.lift) this.lift = a.lift.from + (a.lift.to - a.lift.from) * k;
+    if (a.planet) this.planetD = a.planet.from + (a.planet.to - a.planet.from) * k;
     if (t >= 1) {
       a.active = false;
-      a.lift = undefined;
+      a.planet = undefined;
       a.ease = undefined;
       this.view.yaw = wrap180(this.view.yaw);
-      this.lift = 0;
+      this.planetD = 0;
     }
   }
 
@@ -551,8 +673,8 @@ export class PanoEngine {
     if (!this.renderer.xr.isPresenting) {
       this.tick(now);
       if (this.autoRotate && !this.isFlat && !this.gyro.on && !this.anim.active && !this.mmDrag && !this.pointers.size
-        && now - this.lastInteraction > 3000 && !this.reducedMotion) {
-        this.view.yaw = wrap180(this.view.yaw + 1.5 * dt);
+        && now - this.lastInteraction > this.rotateIdleMs && !this.reducedMotion) {
+        this.view.yaw = wrap180(this.view.yaw + this.rotateSpeed * dt);
       }
       if (this.gyro.on && this.gyro.have) {
         this.camera.position.set(0, 0, 0);
@@ -561,8 +683,60 @@ export class PanoEngine {
       this.drawMinimapBox();
       this.placePins();
     }
-    this.renderer.render(this.scene, this.camera);
+    if (this.outgoing) {
+      const k = Math.min(1, (now - this.outgoing.t0) / CROSSFADE_MS);
+      const m = this.mesh?.material as T.MeshBasicMaterial | undefined;
+      if (m) m.opacity = k;
+      if (k >= 1) this.finishCrossfade();
+    }
+    if (this.planetD > 0.0005 && !this.renderer.xr.isPresenting && !this.isFlat && this.texture && this.input) this.renderPlanet();
+    else this.renderer.render(this.scene, this.camera);
   };
+
+  private renderPlanet() {
+    const THREE = this.THREE;
+    if (!this.planet) {
+      const mat = new THREE.ShaderMaterial({
+        uniforms: {
+          map: { value: null },
+          crop: { value: new THREE.Vector4(0, 0, 1, 1) },
+          d: { value: 1 },
+          rot: { value: new THREE.Matrix3() },
+          tanHalf: { value: 1 },
+          aspect: { value: 1 },
+          bg: { value: new THREE.Color(this.background) },
+          disk: { value: null },
+          diskOn: { value: 0 },
+          diskCos: { value: 1 },
+          diskR: { value: 0 },
+        },
+        vertexShader: PLANET_VERT,
+        fragmentShader: PLANET_FRAG,
+        depthTest: false,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+      mesh.frustumCulled = false;
+      const scene = new THREE.Scene();
+      scene.add(mesh);
+      this.planet = { scene, mesh, mat };
+    }
+    const g = sphereParams(this.input!);
+    const u = this.planet.mat.uniforms;
+    u.map.value = this.texture;
+    u.crop.value.set(g.cropL / g.fullW, g.cropT / g.fullH, g.cropW / g.fullW, g.cropH / g.fullH);
+    u.d.value = this.planetD;
+    this.camera.updateMatrixWorld();
+    u.rot.value.setFromMatrix4(this.camera.matrixWorld);
+    u.tanHalf.value = Math.tan(rad(this.view.fov) / 2);
+    u.aspect.value = this.camera.aspect;
+    const th = rad(this.settings.nadirDeg);
+    u.diskOn.value = this.disk && this.diskTex ? 1 : 0;
+    u.disk.value = this.diskTex;
+    u.diskCos.value = Math.cos(th);
+    u.diskR.value = Math.sin(th) * 1.02;
+    this.renderer.render(this.planet.scene, this.camera);
+  }
 
   /* ---------------------------------------------- pointer and keys */
 
@@ -688,6 +862,10 @@ export class PanoEngine {
 
   private placePins() {
     if (!this.pins.length) return;
+    if (this.planetD > 0.01) {
+      for (const pin of this.pins) pin.dataset.state = "hidden";
+      return;
+    }
     const W = this.canvas.clientWidth, H = this.canvas.clientHeight;
     const v = new this.THREE.Vector3();
     this.hotspots.forEach((h, i) => {
