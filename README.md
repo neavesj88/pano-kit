@@ -121,9 +121,20 @@ engine.setSettings({ ...settings, nadir: "image", nadirDeg: 60, nadirRot: 180 })
 `nadirDeg` is how far out from straight down it reaches (up to `NADIR_DEG_MAX`,
 75°). `nadirRot` is the yaw its top points at, so a figure drawn with its body
 below the centre lies towards `nadirRot + 180`: turn it until it covers you.
-Resizing or turning only moves the mesh; the texture is redrawn only when the
-picture changes. The little planet draws the same cover in its shader, so
-nothing pops when it hands over to the sphere.
+
+The picture goes on a cap of the sphere by stereographic projection from the
+nadir: picture radius 1 is the cap's edge, and the mapping is conformal, so a
+shape drawn in the picture keeps its shape on screen from any angle. Draw it as
+the camera saw the scene. For someone holding the camera out on a stick, that
+means the hand on the stick at the centre, then the feet, the body, and the
+head furthest out, looking back up at the lens (feet and body sit lower, so
+they appear nearer straight down than the head does). Up to 0.3.0 the cover was
+a flat disc, which squashed anything far from the centre to a sliver when
+looked at on a slant.
+
+Turning only rotates the cap; resizing rebuilds it; the texture is redrawn only
+when the picture changes. The little planet draws the same cover in its shader,
+so nothing pops when it hands over to the sphere.
 
 ## Decisions, so they are not re-argued
 
@@ -136,7 +147,7 @@ nothing pops when it hands over to the sphere.
   `deviceMemory <= 4`.
 - Panorama means 2:1 within 5%, as the brief says (the rig's code allowed 2.5%).
 - Map links go by coordinates, never by name.
-- The nadir cover is a picture on a flat disc at view time, not baked in: the
+- The nadir cover is a picture on the sphere at view time, not baked in: the
   photographer can change outfits, turn it, or drop it without a re-upload.
 
 ## Not verified on hardware

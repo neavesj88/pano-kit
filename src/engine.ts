@@ -96,9 +96,8 @@ uniform float aspect;
 uniform vec3 bg;
 uniform sampler2D disk; // the nadir cover, so it does not pop in when the planet hands over to the mesh
 uniform float diskOn;
-uniform float diskCos;  // the cover sits on the plane y = -cos(nadir angle)...
-uniform float diskR;    // ...with this radius (unit sphere), as the mesh does...
-uniform float diskRot;  // ...turned so its top points at this yaw (radians)
+uniform float diskTheta; // the cover reaches this far from straight down (radians), laid on stereographically as the mesh is...
+uniform float diskRot;   // ...turned so its top points at this yaw (radians)
 varying vec2 vUv;
 const float PI = 3.14159265358979;
 void main() {
@@ -120,13 +119,16 @@ void main() {
   if (dot(dx2, dx2) + dot(dy2, dy2) < dot(dx, dx) + dot(dy, dy)) { dx = dx2; dy = dy2; }
   bool inside = img.x >= 0.0 && img.x <= 1.0 && img.y >= 0.0 && img.y <= 1.0;
   vec4 col = inside ? textureGrad(map, uv, dx, dy) : vec4(bg, 1.0);
-  if (diskOn > 0.5 && w.y < 0.0) {
-    vec2 q = vec2(w.x, w.z) * (-diskCos / w.y); // where the ray meets the cover's plane
-    if (length(q) < diskR) {
-      // Into the cover's own frame: x across it, y towards its top (yaw diskRot).
+  if (diskOn > 0.5) {
+    float phi = acos(clamp(-w.y, -1.0, 1.0)); // angle from straight down
+    if (phi < diskTheta) {
+      vec2 h = vec2(w.x, w.z);
+      float hl = length(h);
+      h = hl > 1e-6 ? h / hl : vec2(0.0);
+      // Into the cover's own frame: x across it, y towards its top (yaw diskRot), 1 at its edge.
       float cr = cos(diskRot), sr = sin(diskRot);
-      vec2 l = vec2(q.x * cr + q.y * sr, q.x * sr - q.y * cr);
-      vec4 dc = texture(disk, l / diskR * 0.5 + 0.5);
+      vec2 l = tan(phi * 0.5) / tan(diskTheta * 0.5) * vec2(h.x * cr + h.y * sr, h.x * sr - h.y * cr);
+      vec4 dc = texture(disk, l * 0.5 + 0.5);
       col = vec4(mix(col.rgb, dc.rgb, dc.a), 1.0);
     }
   }
@@ -171,6 +173,29 @@ function makeSphere(THREE: Three, g: ReturnType<typeof sphereParams>, detail = 1
   // Inside-out, and turned so the image centre is yaw 0 straight ahead with text
   // reading the right way round (verified in the rig with a labelled grid).
   geo.scale(-1, 1, 1);
+  return geo;
+}
+
+/**
+ * The nadir cover: a cap of a sphere just inside the photo's, reaching `theta`
+ * out from straight down, with its picture laid on by stereographic projection
+ * from the nadir (picture radius 1 at the cap's edge, top towards yaw 0). That
+ * is conformal: a figure drawn as the camera would have seen it keeps its
+ * shape however it is looked at. A flat disc squashed anything far out from
+ * the centre to a sliver when seen at a slant.
+ */
+function makeCap(THREE: Three, theta: number) {
+  const geo = new THREE.SphereGeometry(RADIUS * 0.98, 128, 48, 0, Math.PI * 2, Math.PI - theta, theta);
+  const pos = geo.attributes.position, uv = geo.attributes.uv;
+  const k = 1 / Math.tan(theta / 2);
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const phi = Math.acos(clamp(-y / Math.hypot(x, y, z), -1, 1));
+    const h = Math.hypot(x, z);
+    const rho = Math.tan(phi / 2) * k;
+    uv.setXY(i, 0.5 + (h > 1e-9 ? (0.5 * rho * x) / h : 0), 0.5 - (h > 1e-9 ? (0.5 * rho * z) / h : 0));
+  }
+  uv.needsUpdate = true;
   return geo;
 }
 
@@ -244,6 +269,8 @@ export class PanoEngine {
   private diskTex: T.Texture | null = null;
   /** What the cover's texture was drawn from, so turning or resizing it does not redraw it. */
   private diskKey = "";
+  /** The angle the cover's cap was built for: a new size is a new cap. */
+  private diskTheta = 0;
   private nadirImage: { src: CanvasImageSource & { width: number; height: number }; serial: number } | null = null;
   private input: PanoInput | null = null;
   /** What is on screen: the best image loaded so far. */
@@ -712,8 +739,7 @@ export class PanoEngine {
           bg: { value: new THREE.Color(this.background) },
           disk: { value: null },
           diskOn: { value: 0 },
-          diskCos: { value: 1 },
-          diskR: { value: 0 },
+          diskTheta: { value: 0 },
           diskRot: { value: 0 },
         },
         vertexShader: PLANET_VERT,
@@ -739,8 +765,7 @@ export class PanoEngine {
     const th = rad(this.nadirDeg());
     u.diskOn.value = this.disk && this.diskTex ? 1 : 0;
     u.disk.value = this.diskTex;
-    u.diskCos.value = Math.cos(th);
-    u.diskR.value = Math.sin(th) * 1.02;
+    u.diskTheta.value = th;
     u.diskRot.value = rad(this.settings.nadirRot ?? 0);
     this.renderer.render(this.planet.scene, this.camera);
   }
@@ -1052,18 +1077,19 @@ export class PanoEngine {
       tex.anisotropy = this.maxAniso;
       tex.needsUpdate = true;
       this.diskTex = tex;
-      this.disk = new THREE.Mesh(new THREE.CircleGeometry(1, 96), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
-      this.disk.rotation.x = -Math.PI / 2;
+      this.disk = new THREE.Mesh(makeCap(THREE, rad(this.nadirDeg())), new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
+      this.diskTheta = rad(this.nadirDeg());
       this.scene.add(this.disk);
       this.diskKey = key;
     }
-    // A flat circle on the plane y = -cos(θ), reaching the sphere at θ from straight down.
     const th = rad(this.nadirDeg());
-    const r = RADIUS * Math.sin(th) * 1.02;
-    this.disk.scale.set(r, r, 1);
-    this.disk.position.y = -RADIUS * Math.cos(th);
-    // Turned in its own plane (before it is laid flat): its top then points at yaw nadirRot.
-    this.disk.rotation.z = -rad(s.nadirRot ?? 0);
+    if (th !== this.diskTheta) {
+      this.disk.geometry.dispose();
+      this.disk.geometry = makeCap(THREE, th);
+      this.diskTheta = th;
+    }
+    // Turned about the vertical: its top then points at yaw nadirRot.
+    this.disk.rotation.y = -rad(s.nadirRot ?? 0);
     this.disk.visible = !this.isFlat;
   }
 
