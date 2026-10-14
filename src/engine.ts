@@ -16,7 +16,7 @@
  */
 import type * as T from "three";
 import {
-  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, FOV_MAX, FOV_MIN, NADIR_DEG_MAX, capPolygon, clamp, firstPaintWidth, pickWidth, textureCap, wrap180,
+  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, FOV_MAX, FOV_MIN, NADIR_DEG_MAX, capPolygon, clamp, firstPaintWidth, fitBadge, pickWidth, textureCap, wrap180,
   type Blur, type Hotspot, type ResolvedKind, type View, type ViewerSettings,
 } from "./core";
 import { bakeTo } from "./bake";
@@ -325,7 +325,7 @@ export class PanoEngine {
   private mmDrag = false;
   private settings: ViewerSettings = { ...DEFAULT_VIEWER_SETTINGS };
   private readonly accent: string;
-  private readonly badge: EngineOptions["badge"];
+  private badge: EngineOptions["badge"];
   private readonly labelMode: "fly" | "note";
   private readonly background: number;
   private xrSession: XRSession | null = null;
@@ -638,35 +638,43 @@ export class PanoEngine {
     this.flyTo({ ...this.start }, dur);
   }
 
-  /** The opening: fly in, little planet, spin, or straight there. */
+  /** The opening (settings.opening), always ending on the start view. A flat
+   *  photo only flies or zooms: there is no sphere to turn round. */
   reveal() {
     const s = this.start;
     this.planetD = 0;
-    if (this.reducedMotion || this.settings.opening === "none") {
+    const o = this.settings.opening;
+    if (this.reducedMotion || o === "none") {
       Object.assign(this.view, s);
       this.anim.active = false;
       return;
     }
-    if (this.settings.opening === "planet" && !this.isFlat) {
-      // The whole scene as a small round world seen from above, unfolding into the start view.
-      const from = { yaw: s.yaw + 60, pitch: -89.9, fov: PLANET_FOV };
+    const run = (from: View, dur: number, planet = false, to: View = s) => {
       Object.assign(this.view, from);
-      this.planetD = 1;
+      this.planetD = planet ? 1 : 0;
       this.anim = {
-        active: true, t0: performance.now(), dur: 3000, from: { ...from },
-        to: { ...s, yaw: from.yaw + wrap180(s.yaw - from.yaw) }, planet: { from: 1, to: 0 }, ease: easeInOut,
+        active: true, t0: performance.now(), dur, from: { ...from }, to: { ...to },
+        planet: planet ? { from: 1, to: 0 } : undefined, ease: easeInOut,
       };
-      return;
+    };
+    if (!this.isFlat) {
+      // The whole scene as a small round world seen from above, unfolding into the start view.
+      if (o === "planet") return run({ yaw: s.yaw + 60, pitch: -89.9, fov: PLANET_FOV }, 3000, true, { ...s, yaw: s.yaw + 60 + wrap180(-60) });
+      // The same world turning half round as it opens out.
+      if (o === "swirl") return run({ yaw: s.yaw - 200, pitch: -89.9, fov: PLANET_FOV }, 5200, true);
+      // One slow turn round the whole scene, settling on the start view.
+      if (o === "spin") return run({ yaw: s.yaw - 330, pitch: s.pitch - 4, fov: Math.min(FOV_MAX, s.fov + 20) }, 7500);
+      // From the ground at your feet, tilting up to the view.
+      if (o === "rise") return run({ yaw: s.yaw - 25, pitch: -89, fov: FOV_MAX }, 4200);
+      // From the sky, tilting down to the view.
+      if (o === "sky") return run({ yaw: s.yaw + 25, pitch: 89, fov: FOV_MAX }, 4200);
     }
-    if (this.settings.opening === "spin" && !this.isFlat) {
-      // One sweeping turn round the whole scene, settling on the start view.
-      const from = { yaw: s.yaw - 330, pitch: s.pitch - 4, fov: Math.min(FOV_MAX, s.fov + 20) };
-      Object.assign(this.view, from);
-      this.anim = { active: true, t0: performance.now(), dur: 3600, from: { ...from }, to: { ...s }, ease: easeInOut };
-      return;
-    }
-    Object.assign(this.view, { yaw: s.yaw - 10, pitch: s.pitch + 3, fov: Math.max(35, s.fov * 0.8) });
-    this.flyTo({ ...s }, 1600);
+    // From close in on the view, pulling back to it.
+    if (o === "zoom") return run({ yaw: s.yaw + 4, pitch: s.pitch + 2, fov: FOV_MIN }, 3400);
+    // fly, and anything a flat photo cannot do: a long glide in from off to one side.
+    run(this.isFlat
+      ? { yaw: s.yaw - 12, pitch: s.pitch + 4, fov: Math.max(FOV_MIN, s.fov * 0.75) }
+      : { yaw: s.yaw - 45, pitch: s.pitch + 12, fov: Math.max(FOV_MIN, s.fov * 0.6) }, 3200);
   }
 
   setFov(f: number) {
@@ -1056,6 +1064,12 @@ export class PanoEngine {
   /** A picture drawn under the nadir cover, sized and turned on its own
    *  (settings.figure): a figure standing in for whoever held the camera,
    *  coming out from under the badge. Same rules as setNadirImage. */
+  /** The words on the badge disk, e.g. each photo's own title and credit. Fitted to the disk however long. */
+  setBadge(badge: { title: string; subtitle?: string } | null) {
+    this.badge = badge;
+    this.updateCovers();
+  }
+
   setFigureImage(src: (CanvasImageSource & { width: number; height: number }) | null) {
     this.figureImage = src ? { src, serial: (this.figureImage?.serial ?? 0) + 1 } : null;
     this.updateCovers();
@@ -1096,9 +1110,15 @@ export class PanoEngine {
     }
     x.globalAlpha = 1;
     if (this.badge) {
-      x.fillStyle = "#f5f3ff"; x.textAlign = "center"; x.textBaseline = "middle";
-      x.font = "700 54px system-ui, sans-serif"; x.fillText(this.badge.title, 0, this.badge.subtitle ? -14 : 0);
-      if (this.badge.subtitle) { x.font = "500 30px system-ui, sans-serif"; x.fillStyle = this.accent; x.fillText(this.badge.subtitle, 0, 34); }
+      // Fitted inside the inner ring whatever the words: shrunk, then wrapped, then cut short.
+      x.textAlign = "center"; x.textBaseline = "middle";
+      const font = (size: number, sub: boolean) => `${sub ? 500 : 700} ${size}px system-ui, sans-serif`;
+      const measure = (t: string, size: number) => { x.font = font(size, false); return x.measureText(t).width; };
+      for (const l of fitBadge(this.badge.title, this.badge.subtitle, 138, measure)) {
+        x.font = font(l.size, l.sub);
+        x.fillStyle = l.sub ? this.accent : "#f5f3ff";
+        x.fillText(l.text, 0, l.y);
+      }
     }
     return c;
   }
@@ -1151,7 +1171,8 @@ export class PanoEngine {
     const usable = (p: Picture | null) => (p && p.src.width > 0 && p.src.height > 0 ? p : null);
     const img = usable(this.nadirImage);
     const mode = s.nadir === "none" ? null : s.nadir === "image" && img ? "image" : "disk";
-    this.disk = this.placeCover(this.disk, mode && (mode === "image" ? `image:${img!.serial}` : "disk"),
+    const badgeKey = this.badge ? `disk:${this.badge.title}|${this.badge.subtitle ?? ""}` : "disk";
+    this.disk = this.placeCover(this.disk, mode && (mode === "image" ? `image:${img!.serial}` : badgeKey),
       () => (mode === "image" ? this.drawPicture(img!.src) : this.drawBadge()), this.nadirDeg(), s.nadirRot ?? 0, 1);
     const fig = s.figure ? usable(this.figureImage) : null;
     this.figure = this.placeCover(this.figure, fig && `figure:${fig.serial}`, () => this.drawPicture(fig!.src),

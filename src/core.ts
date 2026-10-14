@@ -28,9 +28,12 @@ export type Hotspot = { yaw: number; pitch: number; text: string } | { u: number
 
 /** How the viewer opens a photo and dresses it; one set for a whole gallery. */
 export interface ViewerSettings {
-  /** fly: ease in to the start view. planet: a little planet unfolding into it.
-   *  spin: one sweeping turn round the scene. none: straight there. */
-  opening: "fly" | "planet" | "spin" | "none";
+  /** How a photo opens, each ending on the start view. fly: a long glide in.
+   *  planet: a little planet unfolding into it. swirl: the little planet turning
+   *  half round as it unfolds. spin: one slow turn round the scene. rise: from
+   *  straight down, tilting up. sky: from straight up, tilting down. zoom: from
+   *  close in, pulling back. none: straight there. */
+  opening: Opening;
   /** disk: cover the nadir (the tripod, or the hand on the stick) with a badge.
    *  image: with a picture the page hands over (PanoEngine.setNadirImage), drawn
    *  with its transparency, so a figure can cover whoever held the camera; the
@@ -46,6 +49,9 @@ export interface ViewerSettings {
   figure?: { deg: number; rot: number } | null;
   minimap: boolean;
 }
+
+export const OPENINGS = ["fly", "planet", "swirl", "spin", "rise", "sky", "zoom", "none"] as const;
+export type Opening = (typeof OPENINGS)[number];
 
 export const DEFAULT_VIEWER_SETTINGS: ViewerSettings = { opening: "fly", nadir: "none", nadirDeg: 25, nadirRot: 0, minimap: true };
 
@@ -356,4 +362,109 @@ export function compareFolders(a: string, b: string): number {
   if (fa.date && fb.date && fa.date !== fb.date) return fa.date < fb.date ? -1 : 1;
   if (!!fa.date !== !!fb.date) return fa.date ? -1 : 1;
   return fa.key.localeCompare(fb.key);
+}
+
+/* ------------------------------------------------------- the nadir badge */
+
+export interface BadgeLine {
+  text: string;
+  /** Font size, px. */
+  size: number;
+  /** Baseline-middle y from the badge's centre, px (down is positive). */
+  y: number;
+  /** The small line under the title (a credit), drawn in the accent colour. */
+  sub: boolean;
+}
+
+/**
+ * Lay a title and a small credit line out inside a circle of radius `r`, so
+ * whatever is typed into a title stays legible and inside the badge: the
+ * title at the biggest size that fits on one line, else balanced over two or
+ * three lines at a smaller size, each line no wider than the circle is at its
+ * height; past that the last line ends in an ellipsis. `measure` is the width
+ * of a text at a size (a canvas's measureText in the browser).
+ */
+export function fitBadge(
+  title: string, subtitle: string | null | undefined, r: number, measure: (text: string, size: number) => number,
+): BadgeLine[] {
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  const sub = subtitle?.trim() || "";
+  // The credit is small print, well under the title.
+  const subSize0 = Math.round(r * 0.1), gap = Math.round(r * 0.06);
+  const chord = (y: number) => 2 * Math.sqrt(Math.max(0, r * r - y * y)) * 0.92;
+
+  /** Lines at a size, centred as a block with the credit under them, or null if any line overflows. */
+  const place = (lines: string[], size: number, subSize: number): BadgeLine[] | null => {
+    const lh = size * 1.12;
+    const block = lines.length * lh + (sub ? gap + subSize : 0);
+    let y = -block / 2 + lh / 2;
+    const out: BadgeLine[] = [];
+    for (const text of lines) {
+      const half = lh / 2;
+      // The widest part of the line is its edge nearest the rim.
+      if (measure(text, size) > chord(Math.abs(y) + half * 0.8)) return null;
+      out.push({ text, size, y, sub: false });
+      y += lh;
+    }
+    if (sub) {
+      const sy = y - lh / 2 + gap + subSize / 2;
+      if (measure(sub, subSize) > chord(Math.abs(sy) + subSize * 0.4)) return null;
+      out.push({ text: sub, size: subSize, y: sy, sub: true });
+    }
+    return out;
+  };
+
+  /** The split of words into n lines whose widest line is narrowest. */
+  const balance = (n: number, size: number): string[] => {
+    if (n <= 1 || words.length <= 1) return [words.join(" ")];
+    let best: string[] = [words.join(" ")], bestW = Infinity;
+    const go = (start: number, left: number, acc: string[]) => {
+      if (left === 1) {
+        const lines = [...acc, words.slice(start).join(" ")];
+        const w = Math.max(...lines.map(l => measure(l, size)));
+        if (w < bestW) { bestW = w; best = lines; }
+        return;
+      }
+      for (let i = start + 1; i <= words.length - left + 1; i++) go(i, left - 1, [...acc, words.slice(start, i).join(" ")]);
+    };
+    go(0, Math.min(n, words.length), []);
+    return best;
+  };
+
+  if (!words.length) {
+    const only = sub ? place([], 0, subSize0) : [];
+    return only ?? [];
+  }
+  const tries: [number, number, number][] = [[1, 0.36, 0.2], [2, 0.26, 0.14], [3, 0.2, 0.12]];
+  for (const subSize of [subSize0, Math.round(subSize0 * 0.8)]) {
+    for (const [n, big, small] of tries) {
+      for (let size = Math.round(r * big); size >= Math.round(r * small); size -= 2) {
+        const fit = place(balance(n, size), size, subSize);
+        if (fit) return fit;
+      }
+    }
+  }
+  // Too long for three lines at the smallest size: fill three lines word by
+  // word, each as full as its width allows, and end the last with an ellipsis.
+  const size = Math.round(r * 0.12), subSize = Math.round(subSize0 * 0.8);
+  const n = 3, lh = size * 1.12;
+  const top = -(n * lh + (sub ? gap + subSize : 0)) / 2 + lh / 2;
+  const room = (k: number) => chord(Math.abs(top + k * lh) + lh * 0.4);
+  const cutToFit = (text: string, width: number) => {
+    let t = text;
+    while (t.length > 1 && measure(`${t}…`, size) > width) t = t.slice(0, -1).replace(/\s+$/, "");
+    return `${t}…`;
+  };
+  const lines: string[] = [];
+  let i = 0;
+  for (let k = 0; k < n && i < words.length; k++) {
+    let line = words[i++];
+    while (i < words.length && measure(`${line} ${words[i]}`, size) <= room(k)) line += ` ${words[i++]}`;
+    if (measure(line, size) > room(k)) line = cutToFit(line, room(k)); // one word wider than the line
+    lines.push(line);
+  }
+  if (i < words.length && !lines[lines.length - 1].endsWith("…")) {
+    lines[lines.length - 1] = cutToFit(`${lines[lines.length - 1]} ${words[i]}`, room(lines.length - 1));
+  }
+  return place(lines, size, subSize) ?? place(lines, size, 0) ?? [];
 }

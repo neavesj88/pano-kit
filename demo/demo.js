@@ -44,6 +44,82 @@ function capPolygon(yaw0, pitch0, r, W, H) {
   }
   return left.concat(right.reverse());
 }
+function fitBadge(title, subtitle, r, measure) {
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  const sub = subtitle?.trim() || "";
+  const subSize0 = Math.round(r * 0.1), gap = Math.round(r * 0.06);
+  const chord = (y) => 2 * Math.sqrt(Math.max(0, r * r - y * y)) * 0.92;
+  const place = (lines2, size2, subSize2) => {
+    const lh2 = size2 * 1.12;
+    const block = lines2.length * lh2 + (sub ? gap + subSize2 : 0);
+    let y = -block / 2 + lh2 / 2;
+    const out = [];
+    for (const text of lines2) {
+      const half = lh2 / 2;
+      if (measure(text, size2) > chord(Math.abs(y) + half * 0.8)) return null;
+      out.push({ text, size: size2, y, sub: false });
+      y += lh2;
+    }
+    if (sub) {
+      const sy = y - lh2 / 2 + gap + subSize2 / 2;
+      if (measure(sub, subSize2) > chord(Math.abs(sy) + subSize2 * 0.4)) return null;
+      out.push({ text: sub, size: subSize2, y: sy, sub: true });
+    }
+    return out;
+  };
+  const balance = (n2, size2) => {
+    if (n2 <= 1 || words.length <= 1) return [words.join(" ")];
+    let best = [words.join(" ")], bestW = Infinity;
+    const go = (start, left, acc) => {
+      if (left === 1) {
+        const lines2 = [...acc, words.slice(start).join(" ")];
+        const w = Math.max(...lines2.map((l) => measure(l, size2)));
+        if (w < bestW) {
+          bestW = w;
+          best = lines2;
+        }
+        return;
+      }
+      for (let i2 = start + 1; i2 <= words.length - left + 1; i2++) go(i2, left - 1, [...acc, words.slice(start, i2).join(" ")]);
+    };
+    go(0, Math.min(n2, words.length), []);
+    return best;
+  };
+  if (!words.length) {
+    const only = sub ? place([], 0, subSize0) : [];
+    return only ?? [];
+  }
+  const tries = [[1, 0.36, 0.2], [2, 0.26, 0.14], [3, 0.2, 0.12]];
+  for (const subSize2 of [subSize0, Math.round(subSize0 * 0.8)]) {
+    for (const [n2, big, small] of tries) {
+      for (let size2 = Math.round(r * big); size2 >= Math.round(r * small); size2 -= 2) {
+        const fit = place(balance(n2, size2), size2, subSize2);
+        if (fit) return fit;
+      }
+    }
+  }
+  const size = Math.round(r * 0.12), subSize = Math.round(subSize0 * 0.8);
+  const n = 3, lh = size * 1.12;
+  const top = -(n * lh + (sub ? gap + subSize : 0)) / 2 + lh / 2;
+  const room = (k) => chord(Math.abs(top + k * lh) + lh * 0.4);
+  const cutToFit = (text, width) => {
+    let t = text;
+    while (t.length > 1 && measure(`${t}\u2026`, size) > width) t = t.slice(0, -1).replace(/\s+$/, "");
+    return `${t}\u2026`;
+  };
+  const lines = [];
+  let i = 0;
+  for (let k = 0; k < n && i < words.length; k++) {
+    let line = words[i++];
+    while (i < words.length && measure(`${line} ${words[i]}`, size) <= room(k)) line += ` ${words[i++]}`;
+    if (measure(line, size) > room(k)) line = cutToFit(line, room(k));
+    lines.push(line);
+  }
+  if (i < words.length && !lines[lines.length - 1].endsWith("\u2026")) {
+    lines[lines.length - 1] = cutToFit(`${lines[lines.length - 1]} ${words[i]}`, room(lines.length - 1));
+  }
+  return place(lines, size, subSize) ?? place(lines, size, 0) ?? [];
+}
 
 // src/bake.ts
 var sizeOf = (src) => ({
@@ -288,6 +364,7 @@ var PanoEngine = class {
     this.THREE = THREE;
     this.accent = options.accent ?? "#e879f9";
     this.badge = options.badge === void 0 ? null : options.badge;
+    this.labelMode = options.labels ?? "fly";
     this.background = options.background ?? 328458;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -357,6 +434,7 @@ var PanoEngine = class {
   settings = { ...DEFAULT_VIEWER_SETTINGS };
   accent;
   badge;
+  labelMode;
   background;
   xrSession = null;
   disposed = false;
@@ -615,38 +693,39 @@ var PanoEngine = class {
     this.touched();
     this.flyTo({ ...this.start }, dur);
   }
-  /** The opening: fly in, little planet, spin, or straight there. */
+  /** The opening (settings.opening), always ending on the start view. A flat
+   *  photo only flies or zooms: there is no sphere to turn round. */
   reveal() {
     const s = this.start;
     this.planetD = 0;
-    if (this.reducedMotion || this.settings.opening === "none") {
+    const o = this.settings.opening;
+    if (this.reducedMotion || o === "none") {
       Object.assign(this.view, s);
       this.anim.active = false;
       return;
     }
-    if (this.settings.opening === "planet" && !this.isFlat) {
-      const from = { yaw: s.yaw + 60, pitch: -89.9, fov: PLANET_FOV };
+    const run = (from, dur, planet = false, to = s) => {
       Object.assign(this.view, from);
-      this.planetD = 1;
+      this.planetD = planet ? 1 : 0;
       this.anim = {
         active: true,
         t0: performance.now(),
-        dur: 3e3,
+        dur,
         from: { ...from },
-        to: { ...s, yaw: from.yaw + wrap180(s.yaw - from.yaw) },
-        planet: { from: 1, to: 0 },
+        to: { ...to },
+        planet: planet ? { from: 1, to: 0 } : void 0,
         ease: easeInOut
       };
-      return;
+    };
+    if (!this.isFlat) {
+      if (o === "planet") return run({ yaw: s.yaw + 60, pitch: -89.9, fov: PLANET_FOV }, 3e3, true, { ...s, yaw: s.yaw + 60 + wrap180(-60) });
+      if (o === "swirl") return run({ yaw: s.yaw - 200, pitch: -89.9, fov: PLANET_FOV }, 5200, true);
+      if (o === "spin") return run({ yaw: s.yaw - 330, pitch: s.pitch - 4, fov: Math.min(FOV_MAX, s.fov + 20) }, 7500);
+      if (o === "rise") return run({ yaw: s.yaw - 25, pitch: -89, fov: FOV_MAX }, 4200);
+      if (o === "sky") return run({ yaw: s.yaw + 25, pitch: 89, fov: FOV_MAX }, 4200);
     }
-    if (this.settings.opening === "spin" && !this.isFlat) {
-      const from = { yaw: s.yaw - 330, pitch: s.pitch - 4, fov: Math.min(FOV_MAX, s.fov + 20) };
-      Object.assign(this.view, from);
-      this.anim = { active: true, t0: performance.now(), dur: 3600, from: { ...from }, to: { ...s }, ease: easeInOut };
-      return;
-    }
-    Object.assign(this.view, { yaw: s.yaw - 10, pitch: s.pitch + 3, fov: Math.max(35, s.fov * 0.8) });
-    this.flyTo({ ...s }, 1600);
+    if (o === "zoom") return run({ yaw: s.yaw + 4, pitch: s.pitch + 2, fov: FOV_MIN }, 3400);
+    run(this.isFlat ? { yaw: s.yaw - 12, pitch: s.pitch + 4, fov: Math.max(FOV_MIN, s.fov * 0.75) } : { yaw: s.yaw - 45, pitch: s.pitch + 12, fov: Math.max(FOV_MIN, s.fov * 0.6) }, 3200);
   }
   setFov(f) {
     this.view.fov = clamp(f, FOV_MIN, FOV_MAX);
@@ -881,11 +960,26 @@ var PanoEngine = class {
       const pin = document.createElement("button");
       pin.type = "button";
       pin.className = "pano-pin";
-      pin.textContent = h.text || `Label ${i + 1}`;
-      pin.onclick = () => {
-        this.touched();
-        this.flyTo(this.viewFor(h, Math.min(this.view.fov, 60)), 800);
-      };
+      pin.dataset.kind = this.labelMode;
+      const text = document.createElement("span");
+      text.className = "pano-pin-text";
+      text.textContent = h.text || `Label ${i + 1}`;
+      pin.append(text);
+      if (this.labelMode === "note") {
+        pin.dataset.open = "1";
+        pin.setAttribute("aria-expanded", "true");
+        pin.onclick = (e) => {
+          e.stopPropagation();
+          const open = pin.dataset.open !== "1";
+          pin.dataset.open = open ? "1" : "0";
+          pin.setAttribute("aria-expanded", String(open));
+        };
+      } else {
+        pin.onclick = () => {
+          this.touched();
+          this.flyTo(this.viewFor(h, Math.min(this.view.fov, 60)), 800);
+        };
+      }
       this.layers.pins.append(pin);
       return pin;
     });
@@ -1028,6 +1122,11 @@ var PanoEngine = class {
   /** A picture drawn under the nadir cover, sized and turned on its own
    *  (settings.figure): a figure standing in for whoever held the camera,
    *  coming out from under the badge. Same rules as setNadirImage. */
+  /** The words on the badge disk, e.g. each photo's own title and credit. Fitted to the disk however long. */
+  setBadge(badge) {
+    this.badge = badge;
+    this.updateCovers();
+  }
   setFigureImage(src) {
     this.figureImage = src ? { src, serial: (this.figureImage?.serial ?? 0) + 1 } : null;
     this.updateCovers();
@@ -1077,15 +1176,17 @@ var PanoEngine = class {
     }
     x.globalAlpha = 1;
     if (this.badge) {
-      x.fillStyle = "#f5f3ff";
       x.textAlign = "center";
       x.textBaseline = "middle";
-      x.font = "700 54px system-ui, sans-serif";
-      x.fillText(this.badge.title, 0, this.badge.subtitle ? -14 : 0);
-      if (this.badge.subtitle) {
-        x.font = "500 30px system-ui, sans-serif";
-        x.fillStyle = this.accent;
-        x.fillText(this.badge.subtitle, 0, 34);
+      const font = (size, sub) => `${sub ? 500 : 700} ${size}px system-ui, sans-serif`;
+      const measure = (t, size) => {
+        x.font = font(size, false);
+        return x.measureText(t).width;
+      };
+      for (const l of fitBadge(this.badge.title, this.badge.subtitle, 138, measure)) {
+        x.font = font(l.size, l.sub);
+        x.fillStyle = l.sub ? this.accent : "#f5f3ff";
+        x.fillText(l.text, 0, l.y);
       }
     }
     return c;
@@ -1133,9 +1234,10 @@ var PanoEngine = class {
     const usable = (p) => p && p.src.width > 0 && p.src.height > 0 ? p : null;
     const img = usable(this.nadirImage);
     const mode = s.nadir === "none" ? null : s.nadir === "image" && img ? "image" : "disk";
+    const badgeKey = this.badge ? `disk:${this.badge.title}|${this.badge.subtitle ?? ""}` : "disk";
     this.disk = this.placeCover(
       this.disk,
-      mode && (mode === "image" ? `image:${img.serial}` : "disk"),
+      mode && (mode === "image" ? `image:${img.serial}` : badgeKey),
       () => mode === "image" ? this.drawPicture(img.src) : this.drawBadge(),
       this.nadirDeg(),
       s.nadirRot ?? 0,

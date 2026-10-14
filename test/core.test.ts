@@ -4,6 +4,7 @@ import {
   derivativeWidths, textureCap, pickWidth, firstPaintWidth, capPolygon, sortPanos, groupByDay, slugify, panoKeys,
   isAllowedAssetName, wrap180,
 } from "../src/core";
+import { fitBadge, type BadgeLine } from "../src/core";
 
 describe("resolveKind", () => {
   it("treats 2:1 as a panorama and the camera's 4:3 frame as flat", () => {
@@ -149,5 +150,51 @@ describe("slugs and keys", () => {
   it("only signs uploads for known asset names", () => {
     for (const ok of ["map", "thumb", "original", "2048", "8192"]) expect(isAllowedAssetName(ok)).toBe(true);
     for (const bad of ["../x", "2048.jpg", "index.html", "", "1"]) expect(isAllowedAssetName(bad)).toBe(false);
+  });
+});
+
+/* Whatever goes in a title must stay inside the badge and legible. */
+describe("fitting the nadir badge's text", () => {
+  // A stand-in for measureText: every character 0.55 of the font size wide.
+  const measure = (t: string, size: number) => t.length * size * 0.55;
+  const R = 150;
+  const inside = (lines: BadgeLine[]) => lines.every(l => {
+    const half = l.size * 0.56;
+    const y = Math.abs(l.y) + half * 0.8;
+    return measure(l.text, l.size) <= 2 * Math.sqrt(Math.max(0, R * R - y * y));
+  });
+
+  it("puts a short title on one big line with the credit small under it", () => {
+    const lines = fitBadge("neaves.au", "© Jared Neaves 2026", R, measure);
+    expect(lines.map(l => [l.text, l.sub])).toEqual([["neaves.au", false], ["© Jared Neaves 2026", true]]);
+    expect(lines[0].size).toBeGreaterThan(lines[1].size * 2.5);
+    expect(lines[1].y).toBeGreaterThan(lines[0].y);
+    expect(inside(lines)).toBe(true);
+  });
+
+  it("wraps a longer title over balanced lines rather than shrinking it to nothing", () => {
+    const lines = fitBadge("Mirabell Gardens and the Pegasus Fountain", "© Jared Neaves 2026", R, measure).filter(l => !l.sub);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.map(l => l.text).join(" ")).toBe("Mirabell Gardens and the Pegasus Fountain");
+    const widths = lines.map(l => measure(l.text, l.size));
+    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(Math.max(...widths) * 0.6);
+    expect(inside(fitBadge("Mirabell Gardens and the Pegasus Fountain", "© Jared Neaves 2026", R, measure))).toBe(true);
+  });
+
+  it("cuts a title too long for three lines with an ellipsis, still inside", () => {
+    const long = "The Commonwealth War Graves Commission cemetery at Tyne Cot near Passchendaele in Flanders at sunrise on a cold morning";
+    const lines = fitBadge(long, "© Jared Neaves 2026", R, measure);
+    expect(lines.filter(l => !l.sub).length).toBeLessThanOrEqual(3);
+    expect(lines.filter(l => !l.sub).at(-1)!.text.endsWith("…")).toBe(true);
+    expect(inside(lines)).toBe(true);
+    // Cut late, not early: the box is filled before anything is dropped.
+    const shown = lines.filter(l => !l.sub).map(l => l.text).join(" ");
+    expect(shown.startsWith("The Commonwealth War Graves")).toBe(true);
+    expect(shown.split(" ").length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("copes with one enormous word, and with no title at all", () => {
+    expect(inside(fitBadge("Supercalifragilisticexpialidociousnessinglyish", null, R, measure))).toBe(true);
+    expect(fitBadge("   ", "© Jared Neaves 2026", R, measure).map(l => l.text)).toEqual(["© Jared Neaves 2026"]);
   });
 });
