@@ -70,6 +70,11 @@ export interface EngineOptions {
   background?: number;
   /** Words on the nadir disk; null for a plain disk. */
   badge?: { title: string; subtitle?: string } | null;
+  /** What tapping a label does. fly (the default): turn the view to it, as a
+   *  tour's link would. note: open or close it as a comment box where it is,
+   *  without moving the view; it starts open. Labels are .pano-pin buttons with
+   *  data-kind and data-open for the page to style, the text in .pano-pin-text. */
+  labels?: "fly" | "note";
 }
 
 const RADIUS = 500;
@@ -321,6 +326,7 @@ export class PanoEngine {
   private settings: ViewerSettings = { ...DEFAULT_VIEWER_SETTINGS };
   private readonly accent: string;
   private readonly badge: EngineOptions["badge"];
+  private readonly labelMode: "fly" | "note";
   private readonly background: number;
   private xrSession: XRSession | null = null;
   private disposed = false;
@@ -342,6 +348,7 @@ export class PanoEngine {
     this.THREE = THREE;
     this.accent = options.accent ?? "#e879f9";
     this.badge = options.badge === undefined ? null : options.badge;
+    this.labelMode = options.labels ?? "fly";
     this.background = options.background ?? 0x05030a;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -895,11 +902,27 @@ export class PanoEngine {
       const pin = document.createElement("button");
       pin.type = "button";
       pin.className = "pano-pin";
-      pin.textContent = h.text || `Label ${i + 1}`;
-      pin.onclick = () => {
-        this.touched();
-        this.flyTo(this.viewFor(h, Math.min(this.view.fov, 60)), 800);
-      };
+      pin.dataset.kind = this.labelMode;
+      const text = document.createElement("span");
+      text.className = "pano-pin-text";
+      text.textContent = h.text || `Label ${i + 1}`;
+      pin.append(text);
+      if (this.labelMode === "note") {
+        pin.dataset.open = "1";
+        pin.setAttribute("aria-expanded", "true");
+        pin.onclick = e => {
+          // A comment, not a link: open or close it where it is, and leave the view alone.
+          e.stopPropagation();
+          const open = pin.dataset.open !== "1";
+          pin.dataset.open = open ? "1" : "0";
+          pin.setAttribute("aria-expanded", String(open));
+        };
+      } else {
+        pin.onclick = () => {
+          this.touched();
+          this.flyTo(this.viewFor(h, Math.min(this.view.fov, 60)), 800);
+        };
+      }
       this.layers.pins.append(pin);
       return pin;
     });

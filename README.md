@@ -144,6 +144,14 @@ Turning only rotates the cap; resizing rebuilds it; the texture is redrawn only
 when the picture changes. The little planet draws the same cover in its shader,
 so nothing pops when it hands over to the sphere.
 
+### Labels
+
+Labels are buttons the engine places over the photo every frame (`.pano-pin`,
+the text in `.pano-pin-text`). By default a tap turns the view to one, the way a
+link in a tour would. For photos that are not a chained tour, pass
+`{ labels: "note" }`: each is a comment box at its spot that a tap opens and
+closes (`data-open`), and the view stays put.
+
 ## Decisions, so they are not re-argued
 
 - three.js directly, not Photo Sphere Viewer (no WebXR), A-Frame (global scene,
