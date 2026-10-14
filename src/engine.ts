@@ -72,8 +72,9 @@ export interface EngineOptions {
   badge?: { title: string; subtitle?: string } | null;
   /** What tapping a label does. fly (the default): turn the view to it, as a
    *  tour's link would. note: open or close it as a comment box where it is,
-   *  without moving the view; it starts open. Labels are .pano-pin buttons with
-   *  data-kind and data-open for the page to style, the text in .pano-pin-text. */
+   *  without moving the view; it starts closed, a small mark until hovered or
+   *  tapped. Labels are .pano-pin buttons with data-kind and data-open for the
+   *  page to style, the text in .pano-pin-text. */
   labels?: "fly" | "note";
 }
 
@@ -916,8 +917,9 @@ export class PanoEngine {
       text.textContent = h.text || `Label ${i + 1}`;
       pin.append(text);
       if (this.labelMode === "note") {
-        pin.dataset.open = "1";
-        pin.setAttribute("aria-expanded", "true");
+        pin.dataset.open = "0";
+        pin.setAttribute("aria-expanded", "false");
+        pin.setAttribute("aria-label", h.text || `Label ${i + 1}`);
         pin.onclick = e => {
           // A comment, not a link: open or close it where it is, and leave the view alone.
           e.stopPropagation();
@@ -934,6 +936,18 @@ export class PanoEngine {
       this.layers.pins.append(pin);
       return pin;
     });
+  }
+
+  /** Turn to a label and open it: for a list of a photo's points of interest. */
+  showLabel(i: number) {
+    const h = this.hotspots[i], pin = this.pins[i];
+    if (!h) return;
+    this.touched();
+    this.flyTo(this.viewFor(h, Math.min(this.view.fov, 60)), 900);
+    if (pin?.dataset.kind === "note") {
+      pin.dataset.open = "1";
+      pin.setAttribute("aria-expanded", "true");
+    }
   }
 
   /** Where to look so a label or blur is centred. */

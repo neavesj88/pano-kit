@@ -149,8 +149,9 @@ so nothing pops when it hands over to the sphere.
 Labels are buttons the engine places over the photo every frame (`.pano-pin`,
 the text in `.pano-pin-text`). By default a tap turns the view to one, the way a
 link in a tour would. For photos that are not a chained tour, pass
-`{ labels: "note" }`: each is a comment box at its spot that a tap opens and
-closes (`data-open`), and the view stays put.
+`{ labels: "note" }`: each is a small mark at its spot that opens into a comment box when tapped
+(`data-open`; style hover yourself), and the view stays put. `showLabel(i)` turns
+to one and opens it, for a list of a photo's points of interest.
 
 ## Decisions, so they are not re-argued
 
