@@ -45,8 +45,11 @@ export interface ViewerSettings {
   nadirRot?: number;
   /** A picture under the nadir cover (PanoEngine.setFigureImage), sized and turned
    *  on its own: a figure standing in for whoever held the camera, coming out from
-   *  under the badge. deg and rot as for the cover. Null, or no picture: none. */
-  figure?: { deg: number; rot: number } | null;
+   *  under the badge. deg and rot as for the cover, rot about its own centre.
+   *  at: where its centre sits (yaw, pitch); absent, straight down. Whoever held
+   *  the camera out in front stands off to one side of the nadir, not under it.
+   *  Null, or no picture: none. */
+  figure?: { deg: number; rot: number; at?: { yaw: number; pitch: number } | null } | null;
   minimap: boolean;
 }
 

@@ -110,7 +110,7 @@ uniform float diskRot;   // ...turned so its top points at this yaw (radians)
 uniform sampler2D figure; // and the figure under it, the same way
 uniform float figureOn;
 uniform float figureTheta;
-uniform float figureRot;
+uniform mat3 figureFrame; // world to the figure's own frame: undoes its turn, and its move off straight down
 varying vec2 vUv;
 const float PI = 3.14159265358979;
 // A nadir layer at world direction w: transparent outside its cap.
@@ -145,7 +145,7 @@ void main() {
   bool inside = img.x >= 0.0 && img.x <= 1.0 && img.y >= 0.0 && img.y <= 1.0;
   vec4 col = inside ? textureGrad(map, uv, dx, dy) : vec4(bg, 1.0);
   if (figureOn > 0.5) {
-    vec4 fc = cover(figure, w, figureTheta, figureRot);
+    vec4 fc = cover(figure, figureFrame * w, figureTheta, 0.0);
     col = vec4(mix(col.rgb, fc.rgb, fc.a), 1.0);
   }
   if (diskOn > 0.5) {
@@ -801,7 +801,7 @@ export class PanoEngine {
           figure: { value: null },
           figureOn: { value: 0 },
           figureTheta: { value: 0 },
-          figureRot: { value: 0 },
+          figureFrame: { value: new THREE.Matrix3() },
         },
         vertexShader: PLANET_VERT,
         fragmentShader: PLANET_FRAG,
@@ -830,7 +830,8 @@ export class PanoEngine {
     u.figureOn.value = this.figure ? 1 : 0;
     u.figure.value = this.figure?.tex ?? null;
     u.figureTheta.value = this.figure?.theta ?? 0;
-    u.figureRot.value = rad(this.settings.figure?.rot ?? 0);
+    // The same turn as the mesh's, inverted: the planet and the mesh cannot disagree.
+    if (this.figure) u.figureFrame.value.setFromMatrix4(new this.THREE.Matrix4().makeRotationFromQuaternion(this.figure.mesh.quaternion.clone().invert()));
     this.renderer.render(this.planet.scene, this.camera);
   }
 
@@ -1177,7 +1178,10 @@ export class PanoEngine {
   /** One layer: built when what is on it changes, rebuilt in shape when its
    *  size does, and otherwise only turned, so a slider is cheap. A viewer-time
    *  mesh, not baked, so changing it needs no re-encode. */
-  private placeCover(cur: Cover | null, key: string | null, draw: () => HTMLCanvasElement, deg: number, rot: number, layer: number): Cover | null {
+  private placeCover(
+    cur: Cover | null, key: string | null, draw: () => HTMLCanvasElement, deg: number, rot: number, layer: number,
+    at?: { yaw: number; pitch: number } | null,
+  ): Cover | null {
     if (!key) return this.dropCover(cur);
     const THREE = this.THREE;
     const theta = rad(clamp(deg, 5, NADIR_DEG_MAX));
@@ -1201,8 +1205,15 @@ export class PanoEngine {
       c.mesh.geometry = makeCap(THREE, theta, RADIUS * (0.985 - 0.005 * layer));
       c.theta = theta;
     }
-    // Turned about the vertical: its top then points at yaw rot.
-    c.mesh.rotation.y = -rad(rot);
+    // Turned about the vertical, so its top points at yaw rot; then, if it has
+    // somewhere else to be, tilted along the great circle from straight down to
+    // there, which carries its top along without twisting it.
+    const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -rad(rot));
+    if (at && at.pitch > -89.95) {
+      const tilt = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), lookDir(THREE, at.yaw, at.pitch));
+      turn.premultiply(tilt);
+    }
+    c.mesh.quaternion.copy(turn);
     c.mesh.visible = !this.isFlat;
     return c;
   }
@@ -1218,7 +1229,7 @@ export class PanoEngine {
       () => (mode === "image" ? this.drawPicture(img!.src) : this.drawBadge()), this.nadirDeg(), s.nadirRot ?? 0, 1);
     const fig = s.figure ? usable(this.figureImage) : null;
     this.figure = this.placeCover(this.figure, fig && `figure:${fig.serial}`, () => this.drawPicture(fig!.src),
-      s.figure?.deg ?? 0, s.figure?.rot ?? 0, 0);
+      s.figure?.deg ?? 0, s.figure?.rot ?? 0, 0, s.figure?.at);
   }
 
   /* ------------------------------------------------------ sensors */
