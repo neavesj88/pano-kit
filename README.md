@@ -11,9 +11,9 @@ First used by neaves.au `/360`. Ported from `pano-test-rig.html` and its brief.
 
 | Import | Runs in | What it does | Needs |
 |---|---|---|---|
-| `core` | anywhere | Views and `#view=` links, panorama-or-flat, location parsing (typed coordinates and every shape of Google Maps link), outbound map links, the derivative ladder, texture limits, blur-cap geometry, gallery ordering and day grouping, slugs, storage keys | nothing |
+| `core` | anywhere | Dated folders (`parseFolder`: `DD_MM_YYYY_place` into a date and label), views and `#view=` links, panorama-or-flat, location parsing (typed coordinates and every shape of Google Maps link), outbound map links, the derivative ladder, texture limits, blur-cap geometry, gallery ordering and day grouping, slugs, storage keys | nothing |
 | `bake` | browser | Blur regions painted into a copy of a photo: exact spherical caps on equirects, circles on flat photos | DOM canvas |
-| `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (trigger next, grip previous); partial spheres from GPano; flat photos as a virtual print; fly / little-planet / none openings; auto-rotate; label pins; minimap; nadir disk; progressive textures; `renderStartThumb` | three.js r186, loaded by URL |
+| `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (trigger next, grip previous); partial spheres from GPano; flat photos as a virtual print; openings (fly in; a true stereographic little planet that unfolds into the view; a 330° spin; none); crossfade between photos; auto-rotate at any speed; label pins; minimap; nadir disk; progressive textures; `renderStartThumb` | three.js r186, loaded by URL |
 | `derive` | browser | `fingerprint` (SHA-256), `readPhotoMeta` (EXIF date and camera, GPS, GPano), `makeRungs` (each size, blurs baked), `mapStrip`, `putSigned` (PUT with progress) | `exifreader` |
 | `s3` | server | `presign` (short-lived PUT/GET), `deleteObject`, `objectUrl`, `publicUrl`, `regionFromEndpoint` | `aws4fetch` |
 
