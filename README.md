@@ -84,6 +84,17 @@ rules name operations rather than methods; a working shape:
 
 **Cloudflare R2.** Region `auto`; CORS with `AllowedMethods: PUT, GET, HEAD`.
 
+**A far-away bucket and Node 20+.** Node tries each of a host's addresses for
+only 250 ms. A server in Australia takes ~350 ms to connect to a European
+bucket, so Node drops the address that works and `fetch` fails with
+`ETIMEDOUT` (`err.cause`), while `curl` from the same box succeeds. Give the
+app longer at startup:
+
+```ts
+import net from "net";
+net.setDefaultAutoSelectFamilyAttemptTimeout(2500);
+```
+
 ## Decisions, so they are not re-argued
 
 - three.js directly, not Photo Sphere Viewer (no WebXR), A-Frame (global scene,
