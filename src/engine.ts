@@ -98,8 +98,24 @@ uniform sampler2D disk; // the nadir cover, so it does not pop in when the plane
 uniform float diskOn;
 uniform float diskTheta; // the cover reaches this far from straight down (radians), laid on stereographically as the mesh is...
 uniform float diskRot;   // ...turned so its top points at this yaw (radians)
+uniform sampler2D figure; // and the figure under it, the same way
+uniform float figureOn;
+uniform float figureTheta;
+uniform float figureRot;
 varying vec2 vUv;
 const float PI = 3.14159265358979;
+// A nadir layer at world direction w: transparent outside its cap.
+vec4 cover(sampler2D tex, vec3 w, float theta, float turn) {
+  float phi = acos(clamp(-w.y, -1.0, 1.0)); // angle from straight down
+  if (phi >= theta) return vec4(0.0);
+  vec2 h = vec2(w.x, w.z);
+  float hl = length(h);
+  h = hl > 1e-6 ? h / hl : vec2(0.0);
+  // Into the layer's own frame: x across it, y towards its top (yaw turn), 1 at its edge.
+  float cr = cos(turn), sr = sin(turn);
+  vec2 l = tan(phi * 0.5) / tan(theta * 0.5) * vec2(h.x * cr + h.y * sr, h.x * sr - h.y * cr);
+  return texture(tex, l * 0.5 + 0.5);
+}
 void main() {
   vec2 p = (vUv * 2.0 - 1.0) * vec2(aspect, 1.0) * tanHalf;
   vec3 dir = normalize(vec3(p, -1.0));
@@ -119,18 +135,13 @@ void main() {
   if (dot(dx2, dx2) + dot(dy2, dy2) < dot(dx, dx) + dot(dy, dy)) { dx = dx2; dy = dy2; }
   bool inside = img.x >= 0.0 && img.x <= 1.0 && img.y >= 0.0 && img.y <= 1.0;
   vec4 col = inside ? textureGrad(map, uv, dx, dy) : vec4(bg, 1.0);
+  if (figureOn > 0.5) {
+    vec4 fc = cover(figure, w, figureTheta, figureRot);
+    col = vec4(mix(col.rgb, fc.rgb, fc.a), 1.0);
+  }
   if (diskOn > 0.5) {
-    float phi = acos(clamp(-w.y, -1.0, 1.0)); // angle from straight down
-    if (phi < diskTheta) {
-      vec2 h = vec2(w.x, w.z);
-      float hl = length(h);
-      h = hl > 1e-6 ? h / hl : vec2(0.0);
-      // Into the cover's own frame: x across it, y towards its top (yaw diskRot), 1 at its edge.
-      float cr = cos(diskRot), sr = sin(diskRot);
-      vec2 l = tan(phi * 0.5) / tan(diskTheta * 0.5) * vec2(h.x * cr + h.y * sr, h.x * sr - h.y * cr);
-      vec4 dc = texture(disk, l * 0.5 + 0.5);
-      col = vec4(mix(col.rgb, dc.rgb, dc.a), 1.0);
-    }
+    vec4 dc = cover(disk, w, diskTheta, diskRot);
+    col = vec4(mix(col.rgb, dc.rgb, dc.a), 1.0);
   }
   gl_FragColor = col;
   #include <colorspace_fragment>
@@ -184,8 +195,13 @@ function makeSphere(THREE: Three, g: ReturnType<typeof sphereParams>, detail = 1
  * shape however it is looked at. A flat disc squashed anything far out from
  * the centre to a sliver when seen at a slant.
  */
-function makeCap(THREE: Three, theta: number) {
-  const geo = new THREE.SphereGeometry(RADIUS * 0.98, 128, 48, 0, Math.PI * 2, Math.PI - theta, theta);
+/** A picture handed over for the nadir; serial tells a new one from the same one. */
+type Picture = { src: CanvasImageSource & { width: number; height: number }; serial: number };
+/** A nadir layer: its mesh, its texture, what it was drawn from, the angle its cap was built for. */
+interface Cover { mesh: T.Mesh; tex: T.Texture; key: string; theta: number; layer: number }
+
+function makeCap(THREE: Three, theta: number, radius = RADIUS * 0.98) {
+  const geo = new THREE.SphereGeometry(radius, 128, 48, 0, Math.PI * 2, Math.PI - theta, theta);
   const pos = geo.attributes.position, uv = geo.attributes.uv;
   const k = 1 / Math.tan(theta / 2);
   for (let i = 0; i < pos.count; i++) {
@@ -265,13 +281,11 @@ export class PanoEngine {
   private raycaster: T.Raycaster;
   private mesh: T.Mesh | null = null;
   private texture: T.Texture | null = null;
-  private disk: T.Mesh | null = null;
-  private diskTex: T.Texture | null = null;
-  /** What the cover's texture was drawn from, so turning or resizing it does not redraw it. */
-  private diskKey = "";
-  /** The angle the cover's cap was built for: a new size is a new cap. */
-  private diskTheta = 0;
-  private nadirImage: { src: CanvasImageSource & { width: number; height: number }; serial: number } | null = null;
+  /** The nadir cover (layer 1), and the figure drawn under it (layer 0). */
+  private disk: Cover | null = null;
+  private figure: Cover | null = null;
+  private nadirImage: Picture | null = null;
+  private figureImage: Picture | null = null;
   private input: PanoInput | null = null;
   /** What is on screen: the best image loaded so far. */
   private shown: HTMLImageElement | HTMLCanvasElement | null = null;
@@ -371,7 +385,8 @@ export class PanoEngine {
       this.planet.mat.dispose();
       this.planet = null;
     }
-    this.removeDisk();
+    this.disk = this.dropCover(this.disk);
+    this.figure = this.dropCover(this.figure);
     this.layers.pins.replaceChildren();
     this.renderer.dispose();
   }
@@ -387,7 +402,7 @@ export class PanoEngine {
 
   setSettings(s: ViewerSettings) {
     this.settings = s;
-    this.updateDisk();
+    this.updateCovers();
     this.layers.minimap.hidden = !(s.minimap && !this.isFlat && !!this.shown);
   }
 
@@ -452,7 +467,7 @@ export class PanoEngine {
     if (this.isFlat) this.mesh.position.set(0, 0, -FLAT_D);
     else this.mesh.rotation.y = -Math.PI / 2;
     this.scene.add(this.mesh);
-    if (this.disk) this.disk.visible = !this.isFlat;
+    for (const c of [this.disk, this.figure]) if (c) c.mesh.visible = !this.isFlat;
   }
 
   private setTexture(src: HTMLImageElement | HTMLCanvasElement) {
@@ -741,6 +756,10 @@ export class PanoEngine {
           diskOn: { value: 0 },
           diskTheta: { value: 0 },
           diskRot: { value: 0 },
+          figure: { value: null },
+          figureOn: { value: 0 },
+          figureTheta: { value: 0 },
+          figureRot: { value: 0 },
         },
         vertexShader: PLANET_VERT,
         fragmentShader: PLANET_FRAG,
@@ -762,11 +781,14 @@ export class PanoEngine {
     u.rot.value.setFromMatrix4(this.camera.matrixWorld);
     u.tanHalf.value = Math.tan(rad(this.view.fov) / 2);
     u.aspect.value = this.camera.aspect;
-    const th = rad(this.nadirDeg());
-    u.diskOn.value = this.disk && this.diskTex ? 1 : 0;
-    u.disk.value = this.diskTex;
-    u.diskTheta.value = th;
+    u.diskOn.value = this.disk ? 1 : 0;
+    u.disk.value = this.disk?.tex ?? null;
+    u.diskTheta.value = this.disk?.theta ?? 0;
     u.diskRot.value = rad(this.settings.nadirRot ?? 0);
+    u.figureOn.value = this.figure ? 1 : 0;
+    u.figure.value = this.figure?.tex ?? null;
+    u.figureTheta.value = this.figure?.theta ?? 0;
+    u.figureRot.value = rad(this.settings.figure?.rot ?? 0);
     this.renderer.render(this.planet.scene, this.camera);
   }
 
@@ -1000,27 +1022,34 @@ export class PanoEngine {
 
   /* --------------------------------------------------- nadir cover */
 
-  /** A picture for the nadir when settings.nadir is "image": a figure, a logo,
-   *  anything with transparency. Square works best; it is drawn centred and
-   *  contained. Its centre sits straight down and its top points at nadirRot. */
+  /** A picture for the nadir cover itself when settings.nadir is "image": a
+   *  logo, anything with transparency. Square works best; it is drawn centred
+   *  and contained. Its centre sits straight down and its top points at nadirRot. */
   setNadirImage(src: (CanvasImageSource & { width: number; height: number }) | null) {
     this.nadirImage = src ? { src, serial: (this.nadirImage?.serial ?? 0) + 1 } : null;
-    this.updateDisk();
+    this.updateCovers();
+  }
+
+  /** A picture drawn under the nadir cover, sized and turned on its own
+   *  (settings.figure): a figure standing in for whoever held the camera,
+   *  coming out from under the badge. Same rules as setNadirImage. */
+  setFigureImage(src: (CanvasImageSource & { width: number; height: number }) | null) {
+    this.figureImage = src ? { src, serial: (this.figureImage?.serial ?? 0) + 1 } : null;
+    this.updateCovers();
   }
 
   private nadirDeg() {
     return clamp(this.settings.nadirDeg, 5, NADIR_DEG_MAX);
   }
 
-  private removeDisk() {
-    if (!this.disk) return;
-    this.scene.remove(this.disk);
-    this.disk.geometry.dispose();
-    (this.disk.material as T.Material).dispose();
-    this.disk = null;
-    this.diskTex?.dispose();
-    this.diskTex = null;
-    this.diskKey = "";
+  private dropCover(c: Cover | null): null {
+    if (c) {
+      this.scene.remove(c.mesh);
+      c.mesh.geometry.dispose();
+      (c.mesh.material as T.Material).dispose();
+      c.tex.dispose();
+    }
+    return null;
   }
 
   private drawBadge(): HTMLCanvasElement {
@@ -1051,7 +1080,7 @@ export class PanoEngine {
     return c;
   }
 
-  private drawImageCover(src: CanvasImageSource & { width: number; height: number }): HTMLCanvasElement {
+  private drawPicture(src: CanvasImageSource & { width: number; height: number }): HTMLCanvasElement {
     // Seen from close by, and at a slant out towards its edge: as sharp as the device can sensibly hold.
     const size = this.cap >= 8192 ? 2048 : 1024;
     const c = document.createElement("canvas");
@@ -1061,36 +1090,49 @@ export class PanoEngine {
     return c;
   }
 
-  private updateDisk() {
+  /** One layer: built when what is on it changes, rebuilt in shape when its
+   *  size does, and otherwise only turned, so a slider is cheap. A viewer-time
+   *  mesh, not baked, so changing it needs no re-encode. */
+  private placeCover(cur: Cover | null, key: string | null, draw: () => HTMLCanvasElement, deg: number, rot: number, layer: number): Cover | null {
+    if (!key) return this.dropCover(cur);
     const THREE = this.THREE;
-    const s = this.settings;
-    const img = this.nadirImage && this.nadirImage.src.width > 0 && this.nadirImage.src.height > 0 ? this.nadirImage : null;
-    const mode = s.nadir === "none" ? null : s.nadir === "image" && img ? "image" : "disk";
-    if (!mode) return this.removeDisk();
-    // A viewer-time mesh, not baked, so changing it needs no re-encode; and the
-    // texture is only redrawn when what is on it changes, so a rotate slider is cheap.
-    const key = mode === "image" ? `image:${img!.serial}` : "disk";
-    if (key !== this.diskKey || !this.disk) {
-      this.removeDisk();
-      const tex = new THREE.Texture(mode === "image" ? this.drawImageCover(img!.src) : this.drawBadge());
+    const theta = rad(clamp(deg, 5, NADIR_DEG_MAX));
+    let c = cur;
+    if (!c || c.key !== key) {
+      this.dropCover(c);
+      const tex = new THREE.Texture(draw());
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = this.maxAniso;
       tex.needsUpdate = true;
-      this.diskTex = tex;
-      this.disk = new THREE.Mesh(makeCap(THREE, rad(this.nadirDeg())), new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
-      this.diskTheta = rad(this.nadirDeg());
-      this.scene.add(this.disk);
-      this.diskKey = key;
+      // The higher layer sits a little nearer and draws later, over the one below.
+      const mesh = new THREE.Mesh(
+        makeCap(THREE, theta, RADIUS * (0.985 - 0.005 * layer)),
+        new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+      );
+      mesh.renderOrder = 2 + layer;
+      this.scene.add(mesh);
+      c = { mesh, tex, key, theta, layer };
+    } else if (c.theta !== theta) {
+      c.mesh.geometry.dispose();
+      c.mesh.geometry = makeCap(THREE, theta, RADIUS * (0.985 - 0.005 * layer));
+      c.theta = theta;
     }
-    const th = rad(this.nadirDeg());
-    if (th !== this.diskTheta) {
-      this.disk.geometry.dispose();
-      this.disk.geometry = makeCap(THREE, th);
-      this.diskTheta = th;
-    }
-    // Turned about the vertical: its top then points at yaw nadirRot.
-    this.disk.rotation.y = -rad(s.nadirRot ?? 0);
-    this.disk.visible = !this.isFlat;
+    // Turned about the vertical: its top then points at yaw rot.
+    c.mesh.rotation.y = -rad(rot);
+    c.mesh.visible = !this.isFlat;
+    return c;
+  }
+
+  private updateCovers() {
+    const s = this.settings;
+    const usable = (p: Picture | null) => (p && p.src.width > 0 && p.src.height > 0 ? p : null);
+    const img = usable(this.nadirImage);
+    const mode = s.nadir === "none" ? null : s.nadir === "image" && img ? "image" : "disk";
+    this.disk = this.placeCover(this.disk, mode && (mode === "image" ? `image:${img!.serial}` : "disk"),
+      () => (mode === "image" ? this.drawPicture(img!.src) : this.drawBadge()), this.nadirDeg(), s.nadirRot ?? 0, 1);
+    const fig = s.figure ? usable(this.figureImage) : null;
+    this.figure = this.placeCover(this.figure, fig && `figure:${fig.serial}`, () => this.drawPicture(fig!.src),
+      s.figure?.deg ?? 0, s.figure?.rot ?? 0, 0);
   }
 
   /* ------------------------------------------------------ sensors */

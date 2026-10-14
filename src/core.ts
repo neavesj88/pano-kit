@@ -40,6 +40,10 @@ export interface ViewerSettings {
   nadirDeg: number;
   /** Which way the cover's top points, as a yaw in degrees. 0 is the image centre. */
   nadirRot?: number;
+  /** A picture under the nadir cover (PanoEngine.setFigureImage), sized and turned
+   *  on its own: a figure standing in for whoever held the camera, coming out from
+   *  under the badge. deg and rot as for the cover. Null, or no picture: none. */
+  figure?: { deg: number; rot: number } | null;
   minimap: boolean;
 }
 

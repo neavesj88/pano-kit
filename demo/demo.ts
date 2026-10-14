@@ -85,6 +85,7 @@ async function main() {
   const apply = (patch: Partial<ViewerSettings>) => { settings = { ...settings, ...patch }; engine.setSettings(settings); };
   apply({});
   engine.setNadirImage(coverImage());
+  engine.setFigureImage(coverImage());
   const url = testSphere();
   const input = {
     sources: [{ width: 4096, url }],
@@ -104,6 +105,13 @@ async function main() {
     status.textContent = `cover ${cover.value}, top at yaw ${rot.value}°, ${size.value}° out`;
   };
   cover.onchange = rot.oninput = size.oninput = coverChanged;
+  // A figure under the cover, turned and sized on its own.
+  const fig = $<HTMLInputElement>("fig"), frot = $<HTMLInputElement>("frot"), fsize = $<HTMLInputElement>("fsize");
+  fsize.max = String(NADIR_DEG_MAX);
+  fig.onchange = frot.oninput = fsize.oninput = () => {
+    apply({ figure: fig.checked ? { rot: Number(frot.value), deg: Number(fsize.value) } : null });
+    status.textContent = fig.checked ? "figure top at yaw " + frot.value + "°, " + fsize.value + "° out" : "no figure";
+  };
   $("down").onclick = () => engine.flyTo({ yaw: engine.currentView().yaw, pitch: -89, fov: 100 }, 700);
   // A second sphere in another colour, to watch the crossfade between photos.
   const other = { ...input, sources: [{ width: 4096, url: testSphere(4096, 2048, "#7c2d12") }], hotspots: [] };

@@ -118,6 +118,14 @@ engine.setNadirImage(canvasOrImage);   // square works best; its centre is strai
 engine.setSettings({ ...settings, nadir: "image", nadirDeg: 60, nadirRot: 180 });
 ```
 
+Or keep the badge and put a figure under it, sized and turned on its own: the
+badge hides the hand on the stick, the figure the rest of the photographer.
+
+```ts
+engine.setFigureImage(figureCanvas);
+engine.setSettings({ ...settings, nadir: "disk", nadirDeg: 22, nadirRot: 30, figure: { deg: 70, rot: 180 } });
+```
+
 `nadirDeg` is how far out from straight down it reaches (up to `NADIR_DEG_MAX`,
 75°). `nadirRot` is the yaw its top points at, so a figure drawn with its body
 below the centre lies towards `nadirRot + 180`: turn it until it covers you.
