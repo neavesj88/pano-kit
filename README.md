@@ -15,6 +15,7 @@ First used by neaves.au `/360`. Ported from `pano-test-rig.html` and its brief.
 | `bake` | browser | Blur regions painted into a copy of a photo: exact spherical caps on equirects, circles on flat photos | DOM canvas |
 | `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (trigger next, grip previous); partial spheres from GPano; flat photos as a virtual print; openings (fly in; a true stereographic little planet that unfolds into the view; a 330° spin; none); crossfade between photos; auto-rotate at any speed; label pins; minimap; a nadir cover (badge disk, or any picture, turned and sized per photo); progressive textures; `renderStartThumb` | three.js r186, loaded by URL |
 | `derive` | browser | `fingerprint` (SHA-256), `readPhotoMeta` (EXIF date and camera, GPS, GPano), `makeRungs` (each size, blurs baked), `mapStrip`, `putSigned` (PUT with progress) | `exifreader` |
+| `timeline` | anywhere | `parseTimeline` (a Google Maps Timeline export: the phone's Timeline.json, the bare geo: array, Takeout's Records.json and Semantic Location History) and `locateAt` (where the phone was when a photo was taken, clock to clock), for cameras with no GPS | nothing |
 | `s3` | server | `presign` (short-lived PUT/GET), `listVersions`, `purgeObject` (every version), `deleteVersion`, `deleteObject`, `objectUrl`, `publicUrl`, `regionFromEndpoint` | `aws4fetch` |
 
 ## Using it
