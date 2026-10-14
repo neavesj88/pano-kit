@@ -3,6 +3,7 @@
   "version": "0.3.0",
   "private": true,
   "description": "A 360° photo gallery kit: three.js viewer engine with sensors and WebXR, blur baking, derivative making, and S3/B2 upload signing.",
+  "license": "MIT",
   "type": "module",
   "exports": {
     "./core": "./src/core.ts",

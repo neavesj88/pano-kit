@@ -145,3 +145,7 @@ The engine was ported from the rig, where sensors and VR were tested with
 synthetic events only. Confirm on a real phone: the Generic Sensor quaternion
 convention, the no-jump handoff into sensor mode, and the direction of the
 drag-to-nudge-heading. On a Quest 3: 8192 against 4096 textures for judder in VR.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
