@@ -31,14 +31,22 @@ export interface ViewerSettings {
   /** fly: ease in to the start view. planet: a little planet unfolding into it.
    *  spin: one sweeping turn round the scene. none: straight there. */
   opening: "fly" | "planet" | "spin" | "none";
-  /** disk: cover the nadir (the tripod hole) with a badge. */
-  nadir: "none" | "disk";
-  /** Angular radius of the nadir disk, degrees. */
+  /** disk: cover the nadir (the tripod, or the hand on the stick) with a badge.
+   *  image: with a picture the page hands over (PanoEngine.setNadirImage), drawn
+   *  with its transparency, so a figure can cover whoever held the camera; the
+   *  disk until one arrives. */
+  nadir: "none" | "disk" | "image";
+  /** Angular radius of the cover, degrees out from straight down (5 to NADIR_DEG_MAX). */
   nadirDeg: number;
+  /** Which way the cover's top points, as a yaw in degrees. 0 is the image centre. */
+  nadirRot?: number;
   minimap: boolean;
 }
 
-export const DEFAULT_VIEWER_SETTINGS: ViewerSettings = { opening: "fly", nadir: "none", nadirDeg: 25, minimap: true };
+export const DEFAULT_VIEWER_SETTINGS: ViewerSettings = { opening: "fly", nadir: "none", nadirDeg: 25, nadirRot: 0, minimap: true };
+
+/** Past about 75° the cover's plane is nearly level with the eye and smears to the horizon. */
+export const NADIR_DEG_MAX = 75;
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 /** Yaw into [-180, 180). A value already in range comes back untouched, so a

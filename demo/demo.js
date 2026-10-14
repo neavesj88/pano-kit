@@ -2,7 +2,8 @@
 var DEFAULT_VIEW = { yaw: 0, pitch: 0, fov: 75 };
 var FOV_MIN = 30;
 var FOV_MAX = 100;
-var DEFAULT_VIEWER_SETTINGS = { opening: "fly", nadir: "none", nadirDeg: 25, minimap: true };
+var DEFAULT_VIEWER_SETTINGS = { opening: "fly", nadir: "none", nadirDeg: 25, nadirRot: 0, minimap: true };
+var NADIR_DEG_MAX = 75;
 var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 var wrap180 = (a) => a >= -180 && a < 180 ? a : ((a + 540) % 360 + 360) % 360 - 180;
 var TEXTURE_CEILING = 8192;
@@ -140,10 +141,11 @@ uniform mat3 rot;      // camera to world
 uniform float tanHalf; // tan(vertical fov / 2)
 uniform float aspect;
 uniform vec3 bg;
-uniform sampler2D disk; // the nadir disk, so it does not pop in when the planet hands over to the mesh
+uniform sampler2D disk; // the nadir cover, so it does not pop in when the planet hands over to the mesh
 uniform float diskOn;
-uniform float diskCos;  // the disk sits on the plane y = -cos(nadir angle)...
-uniform float diskR;    // ...with this radius (unit sphere), as the mesh does
+uniform float diskCos;  // the cover sits on the plane y = -cos(nadir angle)...
+uniform float diskR;    // ...with this radius (unit sphere), as the mesh does...
+uniform float diskRot;  // ...turned so its top points at this yaw (radians)
 varying vec2 vUv;
 const float PI = 3.14159265358979;
 void main() {
@@ -166,9 +168,12 @@ void main() {
   bool inside = img.x >= 0.0 && img.x <= 1.0 && img.y >= 0.0 && img.y <= 1.0;
   vec4 col = inside ? textureGrad(map, uv, dx, dy) : vec4(bg, 1.0);
   if (diskOn > 0.5 && w.y < 0.0) {
-    vec2 q = vec2(w.x, w.z) * (-diskCos / w.y); // where the ray meets the disk's plane
+    vec2 q = vec2(w.x, w.z) * (-diskCos / w.y); // where the ray meets the cover's plane
     if (length(q) < diskR) {
-      vec4 dc = texture(disk, vec2(q.x / diskR, -q.y / diskR) * 0.5 + 0.5);
+      // Into the cover's own frame: x across it, y towards its top (yaw diskRot).
+      float cr = cos(diskRot), sr = sin(diskRot);
+      vec2 l = vec2(q.x * cr + q.y * sr, q.x * sr - q.y * cr);
+      vec4 dc = texture(disk, l / diskR * 0.5 + 0.5);
       col = vec4(mix(col.rgb, dc.rgb, dc.a), 1.0);
     }
   }
@@ -287,6 +292,9 @@ var PanoEngine = class {
   texture = null;
   disk = null;
   diskTex = null;
+  /** What the cover's texture was drawn from, so turning or resizing it does not redraw it. */
+  diskKey = "";
+  nadirImage = null;
   input = null;
   /** What is on screen: the best image loaded so far. */
   shown = null;
@@ -357,9 +365,7 @@ var PanoEngine = class {
       this.planet.mat.dispose();
       this.planet = null;
     }
-    this.disk?.geometry.dispose();
-    this.disk?.material?.dispose();
-    this.diskTex?.dispose();
+    this.removeDisk();
     this.layers.pins.replaceChildren();
     this.renderer.dispose();
   }
@@ -699,7 +705,8 @@ var PanoEngine = class {
           disk: { value: null },
           diskOn: { value: 0 },
           diskCos: { value: 1 },
-          diskR: { value: 0 }
+          diskR: { value: 0 },
+          diskRot: { value: 0 }
         },
         vertexShader: PLANET_VERT,
         fragmentShader: PLANET_FRAG,
@@ -721,11 +728,12 @@ var PanoEngine = class {
     u.rot.value.setFromMatrix4(this.camera.matrixWorld);
     u.tanHalf.value = Math.tan(rad2(this.view.fov) / 2);
     u.aspect.value = this.camera.aspect;
-    const th = rad2(this.settings.nadirDeg);
+    const th = rad2(this.nadirDeg());
     u.diskOn.value = this.disk && this.diskTex ? 1 : 0;
     u.disk.value = this.diskTex;
     u.diskCos.value = Math.cos(th);
     u.diskR.value = Math.sin(th) * 1.02;
+    u.diskRot.value = rad2(this.settings.nadirRot ?? 0);
     this.renderer.render(this.planet.scene, this.camera);
   }
   /* ---------------------------------------------- pointer and keys */
@@ -976,16 +984,28 @@ var PanoEngine = class {
       this.mmDrag = false;
     });
   }
-  /* ---------------------------------------------------- nadir disk */
-  updateDisk() {
-    const THREE = this.THREE;
-    if (this.disk) {
-      this.scene.remove(this.disk);
-      this.disk.geometry.dispose();
-      this.disk.material.dispose();
-      this.disk = null;
-    }
-    if (this.settings.nadir !== "disk") return;
+  /* --------------------------------------------------- nadir cover */
+  /** A picture for the nadir when settings.nadir is "image": a figure, a logo,
+   *  anything with transparency. Square works best; it is drawn centred and
+   *  contained. Its centre sits straight down and its top points at nadirRot. */
+  setNadirImage(src) {
+    this.nadirImage = src ? { src, serial: (this.nadirImage?.serial ?? 0) + 1 } : null;
+    this.updateDisk();
+  }
+  nadirDeg() {
+    return clamp(this.settings.nadirDeg, 5, NADIR_DEG_MAX);
+  }
+  removeDisk() {
+    if (!this.disk) return;
+    this.scene.remove(this.disk);
+    this.disk.geometry.dispose();
+    this.disk.material.dispose();
+    this.disk = null;
+    this.diskTex?.dispose();
+    this.diskTex = null;
+    this.diskKey = "";
+  }
+  drawBadge() {
     const c = document.createElement("canvas");
     c.width = c.height = 512;
     const x = c.getContext("2d");
@@ -1029,19 +1049,41 @@ var PanoEngine = class {
         x.fillText(this.badge.subtitle, 0, 34);
       }
     }
-    this.diskTex?.dispose();
-    this.diskTex = new THREE.Texture(c);
-    this.diskTex.colorSpace = THREE.SRGBColorSpace;
-    this.diskTex.needsUpdate = true;
-    const th = rad2(this.settings.nadirDeg);
-    this.disk = new THREE.Mesh(
-      new THREE.CircleGeometry(RADIUS * Math.sin(th) * 1.02, 64),
-      new THREE.MeshBasicMaterial({ map: this.diskTex, transparent: true })
-    );
-    this.disk.rotation.x = -Math.PI / 2;
+    return c;
+  }
+  drawImageCover(src) {
+    const size = this.cap >= 8192 ? 2048 : 1024;
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const k = Math.min(size / src.width, size / src.height);
+    c.getContext("2d").drawImage(src, (size - src.width * k) / 2, (size - src.height * k) / 2, src.width * k, src.height * k);
+    return c;
+  }
+  updateDisk() {
+    const THREE = this.THREE;
+    const s = this.settings;
+    const img = this.nadirImage && this.nadirImage.src.width > 0 && this.nadirImage.src.height > 0 ? this.nadirImage : null;
+    const mode = s.nadir === "none" ? null : s.nadir === "image" && img ? "image" : "disk";
+    if (!mode) return this.removeDisk();
+    const key = mode === "image" ? `image:${img.serial}` : "disk";
+    if (key !== this.diskKey || !this.disk) {
+      this.removeDisk();
+      const tex = new THREE.Texture(mode === "image" ? this.drawImageCover(img.src) : this.drawBadge());
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = this.maxAniso;
+      tex.needsUpdate = true;
+      this.diskTex = tex;
+      this.disk = new THREE.Mesh(new THREE.CircleGeometry(1, 96), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+      this.disk.rotation.x = -Math.PI / 2;
+      this.scene.add(this.disk);
+      this.diskKey = key;
+    }
+    const th = rad2(this.nadirDeg());
+    const r = RADIUS * Math.sin(th) * 1.02;
+    this.disk.scale.set(r, r, 1);
     this.disk.position.y = -RADIUS * Math.cos(th);
+    this.disk.rotation.z = -rad2(s.nadirRot ?? 0);
     this.disk.visible = !this.isFlat;
-    this.scene.add(this.disk);
   }
   /* ------------------------------------------------------ sensors */
   static sensorsAvailable() {
@@ -1241,6 +1283,34 @@ function testSphere(w = 4096, h = 2048, tint = "#1e3a8a") {
   x.fillText("pitch -60", w / 2, (90 + 60) / 180 * h);
   return c.toDataURL("image/jpeg", 0.9);
 }
+function coverImage() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 512;
+  const x = c.getContext("2d");
+  x.translate(256, 256);
+  x.fillStyle = "rgba(56,189,248,.85)";
+  x.beginPath();
+  x.ellipse(0, 130, 90, 110, 0, 0, Math.PI * 2);
+  x.fill();
+  x.fillStyle = "#facc15";
+  x.beginPath();
+  x.moveTo(0, -240);
+  x.lineTo(40, -170);
+  x.lineTo(14, -170);
+  x.lineTo(14, 0);
+  x.lineTo(-14, 0);
+  x.lineTo(-14, -170);
+  x.lineTo(-40, -170);
+  x.closePath();
+  x.fill();
+  x.fillStyle = "#fff";
+  x.font = "700 44px system-ui, sans-serif";
+  x.textAlign = "center";
+  x.textBaseline = "middle";
+  x.fillText("TOP", 0, -120);
+  x.fillText("body", 0, 130);
+  return c;
+}
 var hotspots = [
   { yaw: 90, pitch: 10, text: "East label" },
   { yaw: -45, pitch: -20, text: "South-west, low" }
@@ -1268,7 +1338,13 @@ async function main() {
     },
     { badge: { title: "pano-kit", subtitle: "demo" } }
   );
-  engine.setSettings({ ...DEFAULT_VIEWER_SETTINGS, nadir: "disk" });
+  let settings = { ...DEFAULT_VIEWER_SETTINGS, nadir: "disk" };
+  const apply = (patch) => {
+    settings = { ...settings, ...patch };
+    engine.setSettings(settings);
+  };
+  apply({});
+  engine.setNadirImage(coverImage());
   const url = testSphere();
   const input = {
     sources: [{ width: 4096, url }],
@@ -1282,13 +1358,21 @@ async function main() {
   await engine.open(input, { reveal: true });
   $("start").onclick = () => engine.toStart();
   $("planet").onclick = () => {
-    engine.setSettings({ ...DEFAULT_VIEWER_SETTINGS, opening: "planet", nadir: "disk" });
+    apply({ opening: "planet" });
     engine.reveal();
   };
   $("spin").onclick = () => {
-    engine.setSettings({ ...DEFAULT_VIEWER_SETTINGS, opening: "spin", nadir: "disk" });
+    apply({ opening: "spin" });
     engine.reveal();
   };
+  const cover = $("cover"), rot = $("rot"), size = $("size");
+  size.max = String(NADIR_DEG_MAX);
+  const coverChanged = () => {
+    apply({ nadir: cover.value, nadirRot: Number(rot.value), nadirDeg: Number(size.value) });
+    status.textContent = `cover ${cover.value}, top at yaw ${rot.value}\xB0, ${size.value}\xB0 out`;
+  };
+  cover.onchange = rot.oninput = size.oninput = coverChanged;
+  $("down").onclick = () => engine.flyTo({ yaw: engine.currentView().yaw, pitch: -89, fov: 100 }, 700);
   const other = { ...input, sources: [{ width: 4096, url: testSphere(4096, 2048, "#7c2d12") }], hotspots: [] };
   let flip = false;
   $("next").onclick = () => {

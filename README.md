@@ -13,9 +13,9 @@ First used by neaves.au `/360`. Ported from `pano-test-rig.html` and its brief.
 |---|---|---|---|
 | `core` | anywhere | Dated folders (`parseFolder`: `DD_MM_YYYY_place` into a date and label), views and `#view=` links, panorama-or-flat, location parsing (typed coordinates and every shape of Google Maps link), outbound map links, the derivative ladder, texture limits, blur-cap geometry, gallery ordering and day grouping, slugs, storage keys | nothing |
 | `bake` | browser | Blur regions painted into a copy of a photo: exact spherical caps on equirects, circles on flat photos | DOM canvas |
-| `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (trigger next, grip previous); partial spheres from GPano; flat photos as a virtual print; openings (fly in; a true stereographic little planet that unfolds into the view; a 330° spin; none); crossfade between photos; auto-rotate at any speed; label pins; minimap; nadir disk; progressive textures; `renderStartThumb` | three.js r186, loaded by URL |
+| `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (trigger next, grip previous); partial spheres from GPano; flat photos as a virtual print; openings (fly in; a true stereographic little planet that unfolds into the view; a 330° spin; none); crossfade between photos; auto-rotate at any speed; label pins; minimap; a nadir cover (badge disk, or any picture, turned and sized per photo); progressive textures; `renderStartThumb` | three.js r186, loaded by URL |
 | `derive` | browser | `fingerprint` (SHA-256), `readPhotoMeta` (EXIF date and camera, GPS, GPano), `makeRungs` (each size, blurs baked), `mapStrip`, `putSigned` (PUT with progress) | `exifreader` |
-| `s3` | server | `presign` (short-lived PUT/GET), `deleteObject`, `objectUrl`, `publicUrl`, `regionFromEndpoint` | `aws4fetch` |
+| `s3` | server | `presign` (short-lived PUT/GET), `listVersions`, `purgeObject` (every version), `deleteVersion`, `deleteObject`, `objectUrl`, `publicUrl`, `regionFromEndpoint` | `aws4fetch` |
 
 ## Using it
 
@@ -82,6 +82,17 @@ rules name operations rather than methods; a working shape:
 `b2_download_file_by_name` is the one that covers public reads through the
 `https://f00N.backblazeb2.com/file/<bucket>/…` URLs.
 
+**Deleting on B2 frees nothing by itself.** Every B2 bucket keeps versions, and
+an S3 `DELETE` without a `versionId` only lays a delete marker on top: the
+object disappears from listings and public URLs, and its bytes stay, billed.
+`purgeObject` lists the key's versions and deletes each one (stored versions
+first, then markers, so a failure part-way never brings an old version back).
+The key needs `listFiles` as well as `deleteFiles`. A lifecycle rule of
+`{"fileNamePrefix": "", "daysFromHidingToDeleting": 1, "daysFromUploadingToHiding": null}`
+("Keep only the last version" in the B2 console) also clears anything hidden,
+a day later. B2 does not document `NextKeyMarker` in its version listing, so
+`listVersions` pages from the last entry when it is missing.
+
 **Cloudflare R2.** Region `auto`; CORS with `AllowedMethods: PUT, GET, HEAD`.
 
 **A far-away bucket and Node 20+.** Node tries each of a host's addresses for
@@ -95,6 +106,25 @@ import net from "net";
 net.setDefaultAutoSelectFamilyAttemptTimeout(2500);
 ```
 
+### The nadir
+
+Whoever holds a 360° camera on a stick is in the bottom of every photo. The
+engine can cover the nadir at view time (nothing re-encoded): with a badge disk,
+or with a picture the page supplies, drawn with its transparency so a figure can
+lie over the holder rather than a disk over everything.
+
+```ts
+engine.setNadirImage(canvasOrImage);   // square works best; its centre is straight down
+engine.setSettings({ ...settings, nadir: "image", nadirDeg: 60, nadirRot: 180 });
+```
+
+`nadirDeg` is how far out from straight down it reaches (up to `NADIR_DEG_MAX`,
+75°). `nadirRot` is the yaw its top points at, so a figure drawn with its body
+below the centre lies towards `nadirRot + 180`: turn it until it covers you.
+Resizing or turning only moves the mesh; the texture is redrawn only when the
+picture changes. The little planet draws the same cover in its shader, so
+nothing pops when it hands over to the sphere.
+
 ## Decisions, so they are not re-argued
 
 - three.js directly, not Photo Sphere Viewer (no WebXR), A-Frame (global scene,
@@ -106,6 +136,8 @@ net.setDefaultAutoSelectFamilyAttemptTimeout(2500);
   `deviceMemory <= 4`.
 - Panorama means 2:1 within 5%, as the brief says (the rig's code allowed 2.5%).
 - Map links go by coordinates, never by name.
+- The nadir cover is a picture on a flat disc at view time, not baked in: the
+  photographer can change outfits, turn it, or drop it without a re-upload.
 
 ## Not verified on hardware
 

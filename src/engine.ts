@@ -8,7 +8,7 @@
  * Drag, pinch, wheel and keys; phone motion sensors (Generic Sensor API, then
  * deviceorientation, with a watchdog that says why when nothing arrives);
  * WebXR immersive VR; partial spheres from GPano; flat photos as a virtual
- * print; three openings; auto-rotate; label pins; a minimap; a nadir disk;
+ * print; three openings; auto-rotate; label pins; a minimap; a nadir cover;
  * progressive loading up to what the GPU can take; start-view thumbnails.
  *
  * three.js is not imported: pass its module URL to loadThree(), so each app
@@ -16,7 +16,7 @@
  */
 import type * as T from "three";
 import {
-  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, FOV_MAX, FOV_MIN, capPolygon, clamp, firstPaintWidth, pickWidth, textureCap, wrap180,
+  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, FOV_MAX, FOV_MIN, NADIR_DEG_MAX, capPolygon, clamp, firstPaintWidth, pickWidth, textureCap, wrap180,
   type Blur, type Hotspot, type ResolvedKind, type View, type ViewerSettings,
 } from "./core";
 import { bakeTo } from "./bake";
@@ -94,10 +94,11 @@ uniform mat3 rot;      // camera to world
 uniform float tanHalf; // tan(vertical fov / 2)
 uniform float aspect;
 uniform vec3 bg;
-uniform sampler2D disk; // the nadir disk, so it does not pop in when the planet hands over to the mesh
+uniform sampler2D disk; // the nadir cover, so it does not pop in when the planet hands over to the mesh
 uniform float diskOn;
-uniform float diskCos;  // the disk sits on the plane y = -cos(nadir angle)...
-uniform float diskR;    // ...with this radius (unit sphere), as the mesh does
+uniform float diskCos;  // the cover sits on the plane y = -cos(nadir angle)...
+uniform float diskR;    // ...with this radius (unit sphere), as the mesh does...
+uniform float diskRot;  // ...turned so its top points at this yaw (radians)
 varying vec2 vUv;
 const float PI = 3.14159265358979;
 void main() {
@@ -120,9 +121,12 @@ void main() {
   bool inside = img.x >= 0.0 && img.x <= 1.0 && img.y >= 0.0 && img.y <= 1.0;
   vec4 col = inside ? textureGrad(map, uv, dx, dy) : vec4(bg, 1.0);
   if (diskOn > 0.5 && w.y < 0.0) {
-    vec2 q = vec2(w.x, w.z) * (-diskCos / w.y); // where the ray meets the disk's plane
+    vec2 q = vec2(w.x, w.z) * (-diskCos / w.y); // where the ray meets the cover's plane
     if (length(q) < diskR) {
-      vec4 dc = texture(disk, vec2(q.x / diskR, -q.y / diskR) * 0.5 + 0.5);
+      // Into the cover's own frame: x across it, y towards its top (yaw diskRot).
+      float cr = cos(diskRot), sr = sin(diskRot);
+      vec2 l = vec2(q.x * cr + q.y * sr, q.x * sr - q.y * cr);
+      vec4 dc = texture(disk, l / diskR * 0.5 + 0.5);
       col = vec4(mix(col.rgb, dc.rgb, dc.a), 1.0);
     }
   }
@@ -238,6 +242,9 @@ export class PanoEngine {
   private texture: T.Texture | null = null;
   private disk: T.Mesh | null = null;
   private diskTex: T.Texture | null = null;
+  /** What the cover's texture was drawn from, so turning or resizing it does not redraw it. */
+  private diskKey = "";
+  private nadirImage: { src: CanvasImageSource & { width: number; height: number }; serial: number } | null = null;
   private input: PanoInput | null = null;
   /** What is on screen: the best image loaded so far. */
   private shown: HTMLImageElement | HTMLCanvasElement | null = null;
@@ -337,9 +344,7 @@ export class PanoEngine {
       this.planet.mat.dispose();
       this.planet = null;
     }
-    this.disk?.geometry.dispose();
-    (this.disk?.material as T.Material | undefined)?.dispose();
-    this.diskTex?.dispose();
+    this.removeDisk();
     this.layers.pins.replaceChildren();
     this.renderer.dispose();
   }
@@ -709,6 +714,7 @@ export class PanoEngine {
           diskOn: { value: 0 },
           diskCos: { value: 1 },
           diskR: { value: 0 },
+          diskRot: { value: 0 },
         },
         vertexShader: PLANET_VERT,
         fragmentShader: PLANET_FRAG,
@@ -730,11 +736,12 @@ export class PanoEngine {
     u.rot.value.setFromMatrix4(this.camera.matrixWorld);
     u.tanHalf.value = Math.tan(rad(this.view.fov) / 2);
     u.aspect.value = this.camera.aspect;
-    const th = rad(this.settings.nadirDeg);
+    const th = rad(this.nadirDeg());
     u.diskOn.value = this.disk && this.diskTex ? 1 : 0;
     u.disk.value = this.diskTex;
     u.diskCos.value = Math.cos(th);
     u.diskR.value = Math.sin(th) * 1.02;
+    u.diskRot.value = rad(this.settings.nadirRot ?? 0);
     this.renderer.render(this.planet.scene, this.camera);
   }
 
@@ -966,18 +973,32 @@ export class PanoEngine {
     mm.addEventListener("pointercancel", () => { this.mmDrag = false; });
   }
 
-  /* ---------------------------------------------------- nadir disk */
+  /* --------------------------------------------------- nadir cover */
 
-  private updateDisk() {
-    const THREE = this.THREE;
-    if (this.disk) {
-      this.scene.remove(this.disk);
-      this.disk.geometry.dispose();
-      (this.disk.material as T.Material).dispose();
-      this.disk = null;
-    }
-    if (this.settings.nadir !== "disk") return;
-    // A viewer-time mesh, not baked, so changing it needs no re-encode.
+  /** A picture for the nadir when settings.nadir is "image": a figure, a logo,
+   *  anything with transparency. Square works best; it is drawn centred and
+   *  contained. Its centre sits straight down and its top points at nadirRot. */
+  setNadirImage(src: (CanvasImageSource & { width: number; height: number }) | null) {
+    this.nadirImage = src ? { src, serial: (this.nadirImage?.serial ?? 0) + 1 } : null;
+    this.updateDisk();
+  }
+
+  private nadirDeg() {
+    return clamp(this.settings.nadirDeg, 5, NADIR_DEG_MAX);
+  }
+
+  private removeDisk() {
+    if (!this.disk) return;
+    this.scene.remove(this.disk);
+    this.disk.geometry.dispose();
+    (this.disk.material as T.Material).dispose();
+    this.disk = null;
+    this.diskTex?.dispose();
+    this.diskTex = null;
+    this.diskKey = "";
+  }
+
+  private drawBadge(): HTMLCanvasElement {
     const c = document.createElement("canvas");
     c.width = c.height = 512;
     const x = c.getContext("2d")!;
@@ -1002,19 +1023,48 @@ export class PanoEngine {
       x.font = "700 54px system-ui, sans-serif"; x.fillText(this.badge.title, 0, this.badge.subtitle ? -14 : 0);
       if (this.badge.subtitle) { x.font = "500 30px system-ui, sans-serif"; x.fillStyle = this.accent; x.fillText(this.badge.subtitle, 0, 34); }
     }
-    this.diskTex?.dispose();
-    this.diskTex = new THREE.Texture(c);
-    this.diskTex.colorSpace = THREE.SRGBColorSpace;
-    this.diskTex.needsUpdate = true;
-    const th = rad(this.settings.nadirDeg);
-    this.disk = new THREE.Mesh(
-      new THREE.CircleGeometry(RADIUS * Math.sin(th) * 1.02, 64),
-      new THREE.MeshBasicMaterial({ map: this.diskTex, transparent: true }),
-    );
-    this.disk.rotation.x = -Math.PI / 2;
+    return c;
+  }
+
+  private drawImageCover(src: CanvasImageSource & { width: number; height: number }): HTMLCanvasElement {
+    // Seen from close by, and at a slant out towards its edge: as sharp as the device can sensibly hold.
+    const size = this.cap >= 8192 ? 2048 : 1024;
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const k = Math.min(size / src.width, size / src.height);
+    c.getContext("2d")!.drawImage(src, (size - src.width * k) / 2, (size - src.height * k) / 2, src.width * k, src.height * k);
+    return c;
+  }
+
+  private updateDisk() {
+    const THREE = this.THREE;
+    const s = this.settings;
+    const img = this.nadirImage && this.nadirImage.src.width > 0 && this.nadirImage.src.height > 0 ? this.nadirImage : null;
+    const mode = s.nadir === "none" ? null : s.nadir === "image" && img ? "image" : "disk";
+    if (!mode) return this.removeDisk();
+    // A viewer-time mesh, not baked, so changing it needs no re-encode; and the
+    // texture is only redrawn when what is on it changes, so a rotate slider is cheap.
+    const key = mode === "image" ? `image:${img!.serial}` : "disk";
+    if (key !== this.diskKey || !this.disk) {
+      this.removeDisk();
+      const tex = new THREE.Texture(mode === "image" ? this.drawImageCover(img!.src) : this.drawBadge());
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = this.maxAniso;
+      tex.needsUpdate = true;
+      this.diskTex = tex;
+      this.disk = new THREE.Mesh(new THREE.CircleGeometry(1, 96), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+      this.disk.rotation.x = -Math.PI / 2;
+      this.scene.add(this.disk);
+      this.diskKey = key;
+    }
+    // A flat circle on the plane y = -cos(θ), reaching the sphere at θ from straight down.
+    const th = rad(this.nadirDeg());
+    const r = RADIUS * Math.sin(th) * 1.02;
+    this.disk.scale.set(r, r, 1);
     this.disk.position.y = -RADIUS * Math.cos(th);
+    // Turned in its own plane (before it is laid flat): its top then points at yaw nadirRot.
+    this.disk.rotation.z = -rad(s.nadirRot ?? 0);
     this.disk.visible = !this.isFlat;
-    this.scene.add(this.disk);
   }
 
   /* ------------------------------------------------------ sensors */

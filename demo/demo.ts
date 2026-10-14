@@ -6,7 +6,7 @@
  *   esbuild demo/demo.ts --bundle --format=esm --outfile=demo/demo.js
  * and serve the demo folder over http. */
 import { PanoEngine, loadThree, renderStartThumb } from "../src/engine";
-import { DEFAULT_VIEWER_SETTINGS, type Hotspot } from "../src/core";
+import { DEFAULT_VIEWER_SETTINGS, NADIR_DEG_MAX, type Hotspot, type ViewerSettings } from "../src/core";
 
 const THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -45,6 +45,22 @@ function testSphere(w = 4096, h = 2048, tint = "#1e3a8a"): string {
   return c.toDataURL("image/jpeg", 0.9);
 }
 
+/** A stand-in nadir picture: transparent, with an arrow to its top and a body
+ *  below the centre, the way a figure covering the camera holder would sit. */
+function coverImage(): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = c.height = 512;
+  const x = c.getContext("2d")!;
+  x.translate(256, 256);
+  x.fillStyle = "rgba(56,189,248,.85)";
+  x.beginPath(); x.ellipse(0, 130, 90, 110, 0, 0, Math.PI * 2); x.fill();
+  x.fillStyle = "#facc15";
+  x.beginPath(); x.moveTo(0, -240); x.lineTo(40, -170); x.lineTo(14, -170); x.lineTo(14, 0); x.lineTo(-14, 0); x.lineTo(-14, -170); x.lineTo(-40, -170); x.closePath(); x.fill();
+  x.fillStyle = "#fff"; x.font = "700 44px system-ui, sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+  x.fillText("TOP", 0, -120); x.fillText("body", 0, 130);
+  return c;
+}
+
 const hotspots: Hotspot[] = [
   { yaw: 90, pitch: 10, text: "East label" },
   { yaw: -45, pitch: -20, text: "South-west, low" },
@@ -65,7 +81,10 @@ async function main() {
     },
     { badge: { title: "pano-kit", subtitle: "demo" } },
   );
-  engine.setSettings({ ...DEFAULT_VIEWER_SETTINGS, nadir: "disk" });
+  let settings: ViewerSettings = { ...DEFAULT_VIEWER_SETTINGS, nadir: "disk" };
+  const apply = (patch: Partial<ViewerSettings>) => { settings = { ...settings, ...patch }; engine.setSettings(settings); };
+  apply({});
+  engine.setNadirImage(coverImage());
   const url = testSphere();
   const input = {
     sources: [{ width: 4096, url }],
@@ -75,8 +94,17 @@ async function main() {
   await engine.open(input, { reveal: true });
 
   $("start").onclick = () => engine.toStart();
-  $("planet").onclick = () => { engine.setSettings({ ...DEFAULT_VIEWER_SETTINGS, opening: "planet", nadir: "disk" }); engine.reveal(); };
-  $("spin").onclick = () => { engine.setSettings({ ...DEFAULT_VIEWER_SETTINGS, opening: "spin", nadir: "disk" }); engine.reveal(); };
+  $("planet").onclick = () => { apply({ opening: "planet" }); engine.reveal(); };
+  $("spin").onclick = () => { apply({ opening: "spin" }); engine.reveal(); };
+  // The nadir cover: which, how big, which way its top points.
+  const cover = $<HTMLSelectElement>("cover"), rot = $<HTMLInputElement>("rot"), size = $<HTMLInputElement>("size");
+  size.max = String(NADIR_DEG_MAX);
+  const coverChanged = () => {
+    apply({ nadir: cover.value as ViewerSettings["nadir"], nadirRot: Number(rot.value), nadirDeg: Number(size.value) });
+    status.textContent = `cover ${cover.value}, top at yaw ${rot.value}°, ${size.value}° out`;
+  };
+  cover.onchange = rot.oninput = size.oninput = coverChanged;
+  $("down").onclick = () => engine.flyTo({ yaw: engine.currentView().yaw, pitch: -89, fov: 100 }, 700);
   // A second sphere in another colour, to watch the crossfade between photos.
   const other = { ...input, sources: [{ width: 4096, url: testSphere(4096, 2048, "#7c2d12") }], hotspots: [] };
   let flip = false;

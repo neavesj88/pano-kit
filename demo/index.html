@@ -16,6 +16,7 @@
   #mm canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
   #bar { position: fixed; left: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   button { background: rgba(0,0,0,.6); color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 10px; padding: 10px 14px; font: inherit; cursor: pointer; }
+  select, label { background: rgba(0,0,0,.6); color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 10px; padding: 8px 10px; font: inherit; }
   #status { background: rgba(0,0,0,.6); padding: 8px 12px; border-radius: 10px; }
   #thumbOut { position: fixed; left: 12px; top: 12px; width: 240px; border-radius: 8px; }
 </style>
@@ -31,6 +32,10 @@
   <button id="spin">Spin</button>
   <button id="next">Next photo</button>
   <button id="thumb">Render thumbnail</button>
+  <select id="cover" aria-label="Nadir cover"><option value="disk">Disk</option><option value="image">Image</option><option value="none">None</option></select>
+  <label>turn <input id="rot" type="range" min="-180" max="180" value="0"></label>
+  <label>size <input id="size" type="range" min="5" max="75" value="25"></label>
+  <button id="down">Look down</button>
   <span id="status">loading…</span>
 </div>
 <script type="module" src="./demo.js"></script>
