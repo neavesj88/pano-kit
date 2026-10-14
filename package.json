@@ -1,6 +1,6 @@
 {
   "name": "@neaves/pano-kit",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "description": "A 360° photo gallery kit: three.js viewer engine with sensors and WebXR, blur baking, derivative making, and S3/B2 upload signing.",
   "license": "MIT",

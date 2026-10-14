@@ -1233,23 +1233,26 @@ export class PanoEngine {
 
   private static sensing: Promise<boolean> | null = null;
   /** Whether this device really reports how it is held, found by listening
-   *  rather than guessing. iOS sends nothing until asked from a tap, so there a
-   *  touch device with the permission prompt counts. Only a yes is kept: a page
-   *  that loaded hidden may simply not have been sent anything yet. */
+   *  rather than guessing: only real angles count (desktop Chrome sends one
+   *  event with every angle null). Silence is a no, except on an iPhone or
+   *  iPad, which send nothing until asked from a tap. requestPermission alone
+   *  does not mark one: Chrome has it too (152 on Windows does). Only a yes is
+   *  kept: a page that loaded hidden may not have been sent anything yet. */
   static detectSensors(timeoutMs = 1500): Promise<boolean> {
     if (PanoEngine.sensing) return PanoEngine.sensing;
     const probe = new Promise<boolean>(resolve => {
       const DOE = (window as any).DeviceOrientationEvent;
       if (!DOE || !PanoEngine.sensorsAvailable()) return resolve(false);
-      if (typeof DOE.requestPermission === "function") return resolve(true);
+      const ua = navigator.userAgent;
+      const apple = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+      const asksFirst = apple && typeof DOE.requestPermission === "function";
       const done = (ok: boolean) => {
         clearTimeout(timer);
         window.removeEventListener("deviceorientation", heard);
         resolve(ok);
       };
-      // Desktop Chrome sends one event with every angle null: that is a no.
       const heard = (e: DeviceOrientationEvent) => { if (e.beta != null || e.alpha != null) done(true); };
-      const timer = setTimeout(() => done(false), timeoutMs);
+      const timer = setTimeout(() => done(asksFirst), timeoutMs);
       window.addEventListener("deviceorientation", heard);
     });
     PanoEngine.sensing = probe;
