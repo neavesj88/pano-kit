@@ -1223,9 +1223,38 @@ export class PanoEngine {
 
   /* ------------------------------------------------------ sensors */
 
+  /** A quick first check only: desktop browsers define the motion APIs, and a
+   *  touchscreen PC passes the touch test, yet neither has sensors. Decide
+   *  whether to offer Sensors with detectSensors. */
   static sensorsAvailable(): boolean {
     const touchy = navigator.maxTouchPoints > 0 || matchMedia("(pointer: coarse)").matches;
     return touchy && (typeof DeviceOrientationEvent !== "undefined" || "RelativeOrientationSensor" in window);
+  }
+
+  private static sensing: Promise<boolean> | null = null;
+  /** Whether this device really reports how it is held, found by listening
+   *  rather than guessing. iOS sends nothing until asked from a tap, so there a
+   *  touch device with the permission prompt counts. Only a yes is kept: a page
+   *  that loaded hidden may simply not have been sent anything yet. */
+  static detectSensors(timeoutMs = 1500): Promise<boolean> {
+    if (PanoEngine.sensing) return PanoEngine.sensing;
+    const probe = new Promise<boolean>(resolve => {
+      const DOE = (window as any).DeviceOrientationEvent;
+      if (!DOE || !PanoEngine.sensorsAvailable()) return resolve(false);
+      if (typeof DOE.requestPermission === "function") return resolve(true);
+      const done = (ok: boolean) => {
+        clearTimeout(timer);
+        window.removeEventListener("deviceorientation", heard);
+        resolve(ok);
+      };
+      // Desktop Chrome sends one event with every angle null: that is a no.
+      const heard = (e: DeviceOrientationEvent) => { if (e.beta != null || e.alpha != null) done(true); };
+      const timer = setTimeout(() => done(false), timeoutMs);
+      window.addEventListener("deviceorientation", heard);
+    });
+    PanoEngine.sensing = probe;
+    void probe.then(ok => { if (!ok) PanoEngine.sensing = null; });
+    return probe;
   }
 
   private emitSensors() {
@@ -1296,12 +1325,12 @@ export class PanoEngine {
   async startSensors(): Promise<boolean> {
     const DOE = (window as any).DeviceOrientationEvent;
     if (DOE && typeof DOE.requestPermission === "function") {
-      // Say what the browser actually answered: a stored "denied" and a refused
-      // request (no tap behind it, a blocked site) need different fixes.
-      const refused = (why: string) => this.cb.onToast?.(
-        `Motion access was refused (${why}). Allow motion and orientation for this site in the browser's settings, reload, and tap Sensors again.`,
-        "err",
-      );
+      // What the browser answered goes to the console for whoever is debugging;
+      // the visitor gets the fix, which is the same either way.
+      const refused = (why: string) => {
+        console.warn(`pano-kit: motion access refused (${why})`);
+        this.cb.onToast?.("Motion access was refused. Allow motion for this site in the browser's settings, reload, and tap Sensors again.", "err");
+      };
       try {
         const answer = await DOE.requestPermission();
         if (answer !== "granted") {
@@ -1323,12 +1352,9 @@ export class PanoEngine {
     this.emitSensors();
     this.gyro.watchdog = setTimeout(() => {
       if (this.gyro.have) return;
-      const path = this.gyro.path;
+      console.warn(`pano-kit: no motion data arrived (${this.gyro.path})`);
       this.stopSensors(true);
-      this.cb.onToast?.(
-        `No motion data arrived (${path}). On GrapheneOS, check the browser's Sensors permission and its per-site Motion sensors setting. Drag still works.`,
-        "warn",
-      );
+      this.cb.onToast?.("This device isn't sending motion data, so drag to look around.", "warn");
     }, 2000);
     try { this.wakeLock = await (navigator as any).wakeLock?.request("screen"); } catch { /* optional */ }
     return true;
