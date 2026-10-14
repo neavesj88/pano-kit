@@ -526,7 +526,6 @@ export class PanoEngine {
     this.input = input;
     this.bakeSource = null;
     this.blurs = null;
-    this.stopSensors(true);
     this.start = { ...input.start };
     const sizes = input.sources.filter(s => s.url).map(s => s.width);
     const first = firstPaintWidth(sizes);
@@ -552,7 +551,14 @@ export class PanoEngine {
     this.setHotspots(input.hotspots);
     if (this.renderer.xr.isPresenting) this.faceStartInVR();
     this.layers.minimap.hidden = !(this.settings.minimap && !this.isFlat);
-    if (opts.initialView) {
+    if (this.gyro.on) {
+      // Sensors stay on from photo to photo: the new photo's start view is
+      // wherever the phone points now, and no opening plays over the phone's own view.
+      this.aimSensorsAt(this.start.yaw);
+      this.view.fov = this.start.fov;
+      this.anim.active = false;
+      this.planetD = 0;
+    } else if (opts.initialView) {
       Object.assign(this.view, opts.initialView);
       this.anim.active = false;
       this.planetD = 0;
@@ -650,7 +656,14 @@ export class PanoEngine {
   }
 
   flyTo(to: View, dur = 1400) {
-    if (this.gyro.on) this.stopSensors(true);
+    if (this.gyro.on) {
+      // The phone holds the view, so turn its heading instead of dropping the
+      // sensors: what was asked for is now straight ahead (the pitch stays the
+      // phone's). Start view and a label from the list used to switch them off.
+      this.aimSensorsAt(to.yaw);
+      this.view.fov = to.fov;
+      return;
+    }
     if (this.reducedMotion || dur === 0) {
       Object.assign(this.view, to);
       this.anim.active = false;
@@ -1317,6 +1330,15 @@ export class PanoEngine {
       this.camera.fov = this.view.fov;
       this.camera.updateProjectionMatrix();
     }
+  }
+
+  /** Turn the sensors' heading so the phone, pointing where it points now, looks at `yaw`. */
+  private aimSensorsAt(yaw: number) {
+    if (this.gyro.have) {
+      this.gyro.headingOffset += rad(wrap180(this.currentView().yaw - yaw));
+      this.applyGyro(); // the camera now, so a second aim this frame measures from here
+    } else this.gyro.wantYaw = yaw; // the first reading lines up on it (firstSample)
+    this.invalidate();
   }
 
   private firstSample() {
