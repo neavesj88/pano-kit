@@ -1311,21 +1311,45 @@ export class PanoEngine {
     const probe = new Promise<boolean>(resolve => {
       const DOE = (window as any).DeviceOrientationEvent;
       if (!DOE || !PanoEngine.sensorsAvailable()) return resolve(false);
-      const ua = navigator.userAgent;
-      const apple = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-      const asksFirst = typeof DOE.requestPermission === "function" && (apple || matchMedia("(pointer: coarse)").matches);
+      const handheld = matchMedia("(pointer: coarse)").matches;
+      const asks = typeof DOE.requestPermission === "function";
       const done = (ok: boolean) => {
         clearTimeout(timer);
         window.removeEventListener("deviceorientation", heard);
         resolve(ok);
       };
       const heard = (e: DeviceOrientationEvent) => { if (e.beta != null || e.alpha != null) done(true); };
-      const timer = setTimeout(() => done(asksFirst), timeoutMs);
+      // Silence: a yes on an iPhone, and on a handheld whose browser has still to
+      // ask (requestPermission, or a sensor permission at "prompt"), since
+      // either sends nothing until a tap asks it to.
+      const timer = setTimeout(() => {
+        if (PanoEngine.isApple() && asks) return done(true);
+        if (!handheld) return done(false);
+        if (asks) return done(true);
+        void PanoEngine.sensorPermission().then(state => done(state === "prompt"));
+      }, timeoutMs);
       window.addEventListener("deviceorientation", heard);
     });
     PanoEngine.sensing = probe;
     void probe.then(ok => { if (!ok) PanoEngine.sensing = null; });
     return probe;
+  }
+
+  static isApple(): boolean {
+    const ua = navigator.userAgent;
+    return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  }
+
+  /** The browser's sensor permission for this site, where it can be asked:
+   *  "prompt" means a tap can make it ask. "unknown" where the Permissions API
+   *  has no such name (Safari, Firefox): those never ask. */
+  static async sensorPermission(): Promise<"granted" | "prompt" | "denied" | "unknown"> {
+    try {
+      const st = await navigator.permissions.query({ name: "accelerometer" as PermissionName });
+      return st.state;
+    } catch {
+      return "unknown";
+    }
   }
 
   private emitSensors() {
@@ -1386,8 +1410,15 @@ export class PanoEngine {
         this.gyro.q.set(q[0], q[1], q[2], q[3]).premultiply(W);
         if (!this.gyro.have) this.firstSample();
       });
-      s.addEventListener("error", () => {
+      s.addEventListener("error", (e: any) => {
         if (this.gyro.have) return;
+        if (e?.error?.name === "NotAllowedError") {
+          // The visitor said no, or the setting does: not a device without sensors.
+          console.warn("pano-kit: motion access refused (NotAllowedError)");
+          this.stopSensors(true);
+          this.cb.onToast?.("Motion access was refused. Allow motion sensors for this site in the browser's settings, reload, and tap Sensors again.", "err");
+          return;
+        }
         this.gyro.path = "deviceorientation";
         window.addEventListener("deviceorientation", this.onOrientation);
       });
@@ -1400,17 +1431,21 @@ export class PanoEngine {
     }
   }
 
-  /** Look around by moving the phone. Only ever from a button. If no data
-   *  arrives within 2 s it falls back to drag and says why. */
+  /** Look around by moving the phone. Only ever from a tap: that is what lets
+   *  a browser ask. On iOS the asking is DeviceOrientationEvent.requestPermission,
+   *  and the only way in. On a Chromium it is starting the Generic Sensor API,
+   *  which asks a browser still to decide (its requestPermission only answers
+   *  from the stored setting, so its answer is noted, never acted on). While
+   *  the browser is asking, the watchdog waits for the visitor; otherwise no
+   *  data within 2 s means a device without sensors, and drag it is. */
   async startSensors(): Promise<boolean> {
     const DOE = (window as any).DeviceOrientationEvent;
-    if (DOE && typeof DOE.requestPermission === "function") {
-      // What the browser answered goes to the console for whoever is debugging;
-      // the visitor gets the fix, which is the same either way.
-      const refused = (why: string) => {
-        console.warn(`pano-kit: motion access refused (${why})`);
-        this.cb.onToast?.("Motion access was refused. Allow motion for this site in the browser's settings, reload, and tap Sensors again.", "err");
-      };
+    const asks = !!DOE && typeof DOE.requestPermission === "function";
+    const refused = (why: string) => {
+      console.warn(`pano-kit: motion access refused (${why})`);
+      this.cb.onToast?.("Motion access was refused. Allow motion sensors for this site in the browser's settings, reload, and tap Sensors again.", "err");
+    };
+    if (asks && PanoEngine.isApple()) {
       try {
         const answer = await DOE.requestPermission();
         if (answer !== "granted") {
@@ -1425,17 +1460,22 @@ export class PanoEngine {
     this.anim.active = false;
     this.autoRotate = false;
     Object.assign(this.gyro, { wantYaw: this.currentView().yaw, headingOffset: 0, on: true, have: false, count: 0 });
+    // Still inside the tap: a Chromium that has not decided asks here.
     if (!this.startGenericSensor()) {
       this.gyro.path = "deviceorientation";
       window.addEventListener("deviceorientation", this.onOrientation);
     }
+    if (asks && !PanoEngine.isApple()) DOE.requestPermission().then((a: unknown) => console.info(`pano-kit: requestPermission says ${a}`), () => {});
     this.emitSensors();
+    const pending = (await PanoEngine.sensorPermission()) === "prompt" && !this.gyro.have;
+    if (pending && this.gyro.on) this.cb.onToast?.("Allow motion sensors when the browser asks.", "ok");
+    clearTimeout(this.gyro.watchdog);
     this.gyro.watchdog = setTimeout(() => {
-      if (this.gyro.have) return;
+      if (this.gyro.have || !this.gyro.on) return;
       console.warn(`pano-kit: no motion data arrived (${this.gyro.path})`);
       this.stopSensors(true);
-      this.cb.onToast?.("This device isn't sending motion data, so drag to look around.", "warn");
-    }, 2000);
+      this.cb.onToast?.(pending ? "No answer from the browser about motion sensors; drag to look around." : "This device isn't sending motion data, so drag to look around.", "warn");
+    }, pending ? 60000 : 2000);
     try { this.wakeLock = await (navigator as any).wakeLock?.request("screen"); } catch { /* optional */ }
     return true;
   }
