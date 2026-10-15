@@ -352,6 +352,7 @@ export class PanoEngine {
     caption: null as T.Sprite | null,
     captionUntil: 0,
     armed: new Map<XRInputSource, boolean>(),
+    armedY: new Map<XRInputSource, boolean>(),
     drag: null as null | { source: XRInputSource; startRay: number; startYaw: number; swung: number },
     labels: null as T.Group | null,
     dots: [] as (T.Sprite | null)[],
@@ -1554,6 +1555,7 @@ export class PanoEngine {
         this.vr.applied = NaN;
         this.vr.faceStart = false;
         this.vr.armed.clear();
+        this.vr.armedY.clear();
         // The next session starts from its own reference space, not this one's turn.
         this.renderer.xr.setReferenceSpace(null as unknown as XRReferenceSpace);
         this.dropVrLabels();
@@ -1661,6 +1663,10 @@ export class PanoEngine {
         this.vr.yaw = wrap180(this.vr.yaw + st.turn * SNAP_DEG);
         turned = true;
       }
+      // Forward (the stick's y goes negative) is the next photo, back the previous: one flick, one step.
+      const sy = snapTurn(ax.length >= 4 ? ax[3] : ax[1], this.vr.armedY.get(src) ?? true);
+      this.vr.armedY.set(src, sy.armed);
+      if (sy.turn) this.cb.onStep?.(sy.turn < 0 ? 1 : -1);
     }
     const d = this.vr.drag;
     if (d) {
