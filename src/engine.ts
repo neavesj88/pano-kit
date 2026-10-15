@@ -328,6 +328,8 @@ export class PanoEngine {
   private downAt: { x: number; y: number } | null = null;
   private moved = 0;
   private hotspots: Hotspot[] = [];
+  private labelsShown = true;
+  private captionLines: string[] | null = null;
   private pins: HTMLButtonElement[] = [];
   private mmDrag = false;
   private settings: ViewerSettings = { ...DEFAULT_VIEWER_SETTINGS };
@@ -346,6 +348,9 @@ export class PanoEngine {
     applied: NaN,
     /** Set when a photo opens: the next frame turns the world so the start view is where the head points. */
     faceStart: false,
+    /** The caption card, and when it goes. */
+    caption: null as T.Sprite | null,
+    captionUntil: 0,
     armed: new Map<XRInputSource, boolean>(),
     drag: null as null | { source: XRInputSource; startRay: number; startYaw: number; swung: number },
     labels: null as T.Group | null,
@@ -418,6 +423,7 @@ export class PanoEngine {
     navigator.xr?.removeEventListener?.("sessiongranted", this.onSessionGranted);
     this.clearMesh();
     this.dropVrLabels();
+    this.dropVrCaption();
     this.vr.dotTex?.dispose();
     this.texture?.dispose();
     this.finishCrossfade();
@@ -1158,6 +1164,22 @@ export class PanoEngine {
     this.updateCovers();
   }
 
+  /** A line or two about the photo (its title; then date and place), shown in
+   *  the headset for a few seconds after it opens, below the start view: a
+   *  page's own text never shows in VR. */
+  setCaption(lines: string[] | null) {
+    const kept = lines?.map(l => l.trim()).filter(Boolean) ?? [];
+    this.captionLines = kept.length ? kept : null;
+    if (this.renderer.xr.isPresenting) this.showVrCaption();
+  }
+
+  /** Labels shown or put away, in the headset too. On a page the pins layer is
+   *  the page's own element to hide. */
+  setLabelsShown(on: boolean) {
+    this.labelsShown = on;
+    if (this.vr.labels) this.vr.labels.visible = on;
+  }
+
   setFigureImage(src: (CanvasImageSource & { width: number; height: number }) | null) {
     this.figureImage = src ? { src, serial: (this.figureImage?.serial ?? 0) + 1 } : null;
     this.updateCovers();
@@ -1535,6 +1557,7 @@ export class PanoEngine {
         // The next session starts from its own reference space, not this one's turn.
         this.renderer.xr.setReferenceSpace(null as unknown as XRReferenceSpace);
         this.dropVrLabels();
+        this.dropVrCaption();
         Object.assign(this.view, this.start);
         this.resize();
         this.cb.onVR?.(false);
@@ -1615,6 +1638,7 @@ export class PanoEngine {
     const frame = this.renderer.xr.getFrame() as XRFrame | null;
     const s = this.xrSession, base = this.vr.base;
     if (!frame || !s || !base) return;
+    if (this.vr.caption && performance.now() > this.vr.captionUntil) this.dropVrCaption();
     let turned = false;
     if (this.vr.faceStart) {
       // What is seen = head yaw in the base space + the world's turn: set the turn
@@ -1704,8 +1728,38 @@ export class PanoEngine {
       this.vr.dots.push(dot);
       this.vr.cards.push(card.sprite);
     });
+    g.visible = this.labelsShown;
     this.vr.labels = g;
     this.scene.add(g);
+    this.showVrCaption();
+  }
+
+  /** The caption below the start view, for eight seconds. In the offset space
+   *  the start view is straight ahead of the head, so the card is too. */
+  private showVrCaption() {
+    this.dropVrCaption();
+    if (!this.renderer.xr.isPresenting || !this.captionLines) return;
+    const THREE = this.THREE;
+    const at = RADIUS * 0.9;
+    const [title, ...rest] = this.captionLines;
+    const card = this.vrCard(title, rest.join(" · ") || undefined);
+    const w = 2 * at * Math.tan(rad(34) / 2);
+    card.sprite.scale.set(w, w * card.aspect, 1);
+    card.sprite.position.copy(lookDir(THREE, this.start.yaw, -24).multiplyScalar(at));
+    card.sprite.renderOrder = 12;
+    this.scene.add(card.sprite);
+    this.vr.caption = card.sprite;
+    this.vr.captionUntil = performance.now() + 8000;
+  }
+
+  private dropVrCaption() {
+    const c = this.vr.caption;
+    if (!c) return;
+    this.scene.remove(c);
+    const m = c.material as T.SpriteMaterial;
+    m.map?.dispose();
+    m.dispose();
+    this.vr.caption = null;
   }
 
   private dropVrLabels() {
@@ -1744,27 +1798,35 @@ export class PanoEngine {
     return t;
   }
 
-  /** A label's text on a dark card, as a sprite, and its height over its width. */
-  private vrCard(text: string): { sprite: T.Sprite; aspect: number } {
-    const W = 1024, pad = 40, size = 46, lineH = 60;
+  /** Text on a dark card, as a sprite, and its height over its width: a label,
+   *  or a caption with a smaller second line. */
+  private vrCard(text: string, sub?: string): { sprite: T.Sprite; aspect: number } {
+    const W = 1024, pad = 40, size = 46, lineH = 60, subSize = 34, subH = 46;
     const c = document.createElement("canvas");
     const ctx = c.getContext("2d")!;
-    const font = `600 ${size}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    const family = `system-ui, -apple-system, "Segoe UI", sans-serif`;
+    const font = `600 ${size}px ${family}`, subFont = `400 ${subSize}px ${family}`;
     ctx.font = font;
     const lines = wrapLines(text, W - pad * 2, s => ctx.measureText(s).width, 5);
+    ctx.font = subFont;
+    const subLines = sub ? wrapLines(sub, W - pad * 2, s => ctx.measureText(s).width, 2) : [];
     c.width = W;
-    c.height = pad * 2 + Math.max(1, lines.length) * lineH;
-    ctx.font = font; // a resize clears the context's state
-    ctx.fillStyle = "rgba(10,8,18,.92)";
+    c.height = pad * 2 + Math.max(1, lines.length) * lineH + (subLines.length ? 8 + subLines.length * subH : 0);
+    ctx.fillStyle = "rgba(10,8,18,.92)"; // a resize clears the context's state, so the fonts are set again below
     ctx.strokeStyle = this.accent;
     ctx.lineWidth = 6;
     ctx.beginPath();
     ctx.roundRect(3, 3, W - 6, c.height - 6, 28);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "#ffffff";
     ctx.textBaseline = "middle";
+    ctx.font = font;
+    ctx.fillStyle = "#ffffff";
     lines.forEach((l, i) => ctx.fillText(l, pad, pad + lineH * i + lineH / 2));
+    ctx.font = subFont;
+    ctx.fillStyle = "rgba(255,255,255,.78)";
+    const subTop = pad + Math.max(1, lines.length) * lineH + 8;
+    subLines.forEach((l, i) => ctx.fillText(l, pad, subTop + subH * i + subH / 2));
     const t = new this.THREE.CanvasTexture(c);
     t.colorSpace = this.THREE.SRGBColorSpace;
     t.anisotropy = this.maxAniso;
