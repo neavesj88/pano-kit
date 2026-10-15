@@ -11,6 +11,18 @@ const deg = (r: number) => (r * 180) / Math.PI;
 export const SNAP_DEG = 30;
 /** A trigger press that turned the view further than this was a drag, not a click. */
 export const DRAG_DEG = 3;
+/** A button held while the controller sweeps at least this far sideways is a swipe. */
+export const SWIPE_DEG = 20;
+
+/**
+ * What a held button meant once released: swept left (the ray's yaw fell)
+ * fast enough, the next photo; swept right, the previous; a short press that
+ * barely moved, a click; a long hold going nowhere, nothing.
+ */
+export function pressOutcome(deltaYaw: number, swungDeg: number, heldMs: number): "next" | "previous" | "click" | "none" {
+  if (swungDeg >= SWIPE_DEG) return heldMs > 1500 || Math.abs(deltaYaw) < SWIPE_DEG / 2 ? "none" : deltaYaw < 0 ? "next" : "previous";
+  return swungDeg < DRAG_DEG && heldMs <= 600 ? "click" : "none";
+}
 
 /**
  * Snap turning from a thumbstick's x axis: one turn per flick, then nothing

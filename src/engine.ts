@@ -20,7 +20,7 @@ import {
   type Blur, type Hotspot, type ResolvedKind, type View, type ViewerSettings,
 } from "./core";
 import { bakeTo } from "./bake";
-import { DRAG_DEG, SNAP_DEG, pointedLabel, snapTurn, wrapLines, yawOf, type Vec3 } from "./vr";
+import { DRAG_DEG, SNAP_DEG, pointedLabel, pressOutcome, snapTurn, wrapLines, yawOf, type Vec3 } from "./vr";
 
 export type Three = typeof T;
 const threeLoads = new Map<string, Promise<Three>>();
@@ -352,7 +352,9 @@ export class PanoEngine {
     caption: null as T.Sprite | null,
     captionUntil: 0,
     armed: new Map<XRInputSource, boolean>(),
-    armedY: new Map<XRInputSource, boolean>(),
+    /** A/X held: where the ray pointed when it went down, and how far it has swept since. */
+    hold: new Map<XRInputSource, { t0: number; startRay: number; delta: number; swung: number }>(),
+    bDown: new Map<XRInputSource, boolean>(),
     drag: null as null | { source: XRInputSource; startRay: number; startYaw: number; swung: number },
     labels: null as T.Group | null,
     dots: [] as (T.Sprite | null)[],
@@ -1555,7 +1557,8 @@ export class PanoEngine {
         this.vr.applied = NaN;
         this.vr.faceStart = false;
         this.vr.armed.clear();
-        this.vr.armedY.clear();
+        this.vr.hold.clear();
+        this.vr.bDown.clear();
         // The next session starts from its own reference space, not this one's turn.
         this.renderer.xr.setReferenceSpace(null as unknown as XRReferenceSpace);
         this.dropVrLabels();
@@ -1564,9 +1567,11 @@ export class PanoEngine {
         this.resize();
         this.cb.onVR?.(false);
       });
-      // The trigger drags the view round like a mouse; a press that hardly
-      // turned it is a click: it opens or closes the label pointed at, else
-      // goes to the next photo. Grip goes back. The thumbsticks snap-turn (vrTick).
+      // The trigger is for looking: held and swept it drags the view round like a
+      // mouse, and a press that hardly moved is a click that opens or closes the
+      // label pointed at. Stepping through the photos is the A/X and B/Y buttons
+      // (vrTick), so neither can set the other off. Grip does nothing: hands
+      // squeeze it just holding the controller.
       s.addEventListener("selectstart", e => {
         const ray = this.vr.base && this.rayOf(e.frame, e.inputSource, this.vr.base);
         if (ray) this.vr.drag = { source: e.inputSource, startRay: yawOf(ray), startYaw: this.vr.yaw, swung: 0 };
@@ -1577,14 +1582,9 @@ export class PanoEngine {
         const space = this.renderer.xr.getReferenceSpace();
         const ray = space && this.rayOf(e.frame, e.inputSource, space);
         const i = ray ? pointedLabel(ray, this.vr.dirs) : -1;
-        if (i >= 0) {
-          if (!this.vr.open.delete(i)) this.vr.open.add(i);
-          return;
-        }
-        this.cb.onStep?.(1);
+        if (i >= 0 && !this.vr.open.delete(i)) this.vr.open.add(i);
       });
       s.addEventListener("selectend", e => { if (this.vr.drag?.source === e.inputSource) this.vr.drag = null; });
-      s.addEventListener("squeeze", () => this.cb.onStep?.(-1));
       await this.renderer.xr.setSession(s);
       this.vr.base = this.renderer.xr.getReferenceSpace();
       this.faceStartInVR();
@@ -1652,21 +1652,43 @@ export class PanoEngine {
         turned = true;
       }
     }
+    const now = performance.now();
     for (const src of s.inputSources) {
-      const ax = src.gamepad?.axes;
-      if (!ax || ax.length < 2) continue;
-      // xr-standard puts the thumbstick at axes 2 and 3 (0 and 1 are a touchpad); a
-      // controller with only two axes has its stick there.
-      const st = snapTurn(ax.length >= 4 ? ax[2] : ax[0], this.vr.armed.get(src) ?? true);
-      this.vr.armed.set(src, st.armed);
-      if (st.turn) {
-        this.vr.yaw = wrap180(this.vr.yaw + st.turn * SNAP_DEG);
-        turned = true;
+      const gp = src.gamepad;
+      if (!gp) continue;
+      const ax = gp.axes;
+      if (ax.length >= 2) {
+        // xr-standard puts the thumbstick at axes 2 and 3 (0 and 1 are a touchpad); a
+        // controller with only two axes has its stick there. Left and right turn; up
+        // and down are deliberately nothing.
+        const st = snapTurn(ax.length >= 4 ? ax[2] : ax[0], this.vr.armed.get(src) ?? true);
+        this.vr.armed.set(src, st.armed);
+        if (st.turn) {
+          this.vr.yaw = wrap180(this.vr.yaw + st.turn * SNAP_DEG);
+          turned = true;
+        }
       }
-      // Forward (the stick's y goes negative) is the next photo, back the previous: one flick, one step.
-      const sy = snapTurn(ax.length >= 4 ? ax[3] : ax[1], this.vr.armedY.get(src) ?? true);
-      this.vr.armedY.set(src, sy.armed);
-      if (sy.turn) this.cb.onStep?.(sy.turn < 0 ? 1 : -1);
+      // xr-standard buttons: 4 is A or X, 5 is B or Y. A/X clicked is the next photo;
+      // held and swept sideways, a swipe: left next, right previous. B/Y is previous.
+      const a = gp.buttons[4]?.pressed ?? false, b = gp.buttons[5]?.pressed ?? false;
+      const held = this.vr.hold.get(src);
+      if (a && !held) {
+        const ray = this.rayOf(frame, src, base);
+        if (ray) this.vr.hold.set(src, { t0: now, startRay: yawOf(ray), delta: 0, swung: 0 });
+      } else if (a && held) {
+        const ray = this.rayOf(frame, src, base);
+        if (ray) {
+          held.delta = wrap180(yawOf(ray) - held.startRay);
+          held.swung = Math.max(held.swung, Math.abs(held.delta));
+        }
+      } else if (!a && held) {
+        this.vr.hold.delete(src);
+        const out = pressOutcome(held.delta, held.swung, now - held.t0);
+        if (out === "next" || out === "click") this.cb.onStep?.(1);
+        else if (out === "previous") this.cb.onStep?.(-1);
+      }
+      if (b && !(this.vr.bDown.get(src) ?? false)) this.cb.onStep?.(-1);
+      this.vr.bDown.set(src, b);
     }
     const d = this.vr.drag;
     if (d) {

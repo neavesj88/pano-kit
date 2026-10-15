@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DRAG_DEG, SNAP_DEG, angleDeg, pointedLabel, snapTurn, wrapLines, yawOf } from "../src/vr";
+import { DRAG_DEG, SNAP_DEG, angleDeg, pointedLabel, pressOutcome, snapTurn, wrapLines, yawOf } from "../src/vr";
 
 describe("snap turning from a thumbstick", () => {
   it("turns once per flick, either way, and waits for the stick to come back", () => {
@@ -63,5 +63,23 @@ describe("a label's text on its card", () => {
 
   it("gives nothing for no text", () => {
     expect(wrapLines("   ", 100, measure)).toEqual([]);
+  });
+});
+
+describe("what a held A/X button meant", () => {
+  it("swept left is the next photo, right the previous", () => {
+    expect(pressOutcome(-25, 25, 400)).toBe("next");
+    expect(pressOutcome(30, 30, 900)).toBe("previous");
+  });
+
+  it("a short press that barely moved is a click; a long hold going nowhere is nothing", () => {
+    expect(pressOutcome(1, 2, 200)).toBe("click");
+    expect(pressOutcome(0, 0, 2000)).toBe("none");
+    expect(pressOutcome(8, 8, 300)).toBe("none");
+  });
+
+  it("a slow wander, or a sweep that came back, is nothing", () => {
+    expect(pressOutcome(-40, 40, 3000)).toBe("none");
+    expect(pressOutcome(2, 30, 500)).toBe("none");
   });
 });
