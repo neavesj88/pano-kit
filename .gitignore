@@ -1,1 +1,3 @@
 node_modules/
+desk/config.local.json
+desk/dist/

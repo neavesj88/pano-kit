@@ -20,6 +20,7 @@ import {
   type Blur, type Hotspot, type ResolvedKind, type View, type ViewerSettings,
 } from "./core";
 import { bakeTo } from "./bake";
+import { isIdentityGrade, type Grade } from "./grade";
 import { DRAG_DEG, SNAP_DEG, pointedLabel, pressOutcome, snapTurn, wrapLines, yawOf, type Vec3 } from "./vr";
 
 export type Three = typeof T;
@@ -304,6 +305,7 @@ export class PanoEngine {
   /** What blur previews are baked from: the untouched original, when the curator loads it. */
   private bakeSource: HTMLImageElement | null = null;
   private blurs: Blur[] | null = null;
+  private grade: Grade | null = null;
   private loadToken = 0;
   private isFlat = false;
   private resizeObs: ResizeObserver;
@@ -551,6 +553,7 @@ export class PanoEngine {
     this.input = input;
     this.bakeSource = null;
     this.blurs = null;
+    this.grade = null;
     this.start = { ...input.start };
     const sizes = input.sources.filter(s => s.url).map(s => s.width);
     const first = firstPaintWidth(sizes);
@@ -600,7 +603,7 @@ export class PanoEngine {
         const big = await loadImage(bestUrl);
         if (token !== this.loadToken || this.disposed) return;
         this.shown = big;
-        if (this.blurs) this.applyBlurPreview();
+        if (this.blurs || this.grade) this.applyBlurPreview();
         else this.setTexture(big);
         this.cb.onLoaded?.({ width: best, final: true });
       } catch {
@@ -617,12 +620,23 @@ export class PanoEngine {
     const img = await loadImage(url);
     if (this.disposed) return;
     this.bakeSource = img;
-    if (this.blurs) this.applyBlurPreview();
+    if (this.blurs || this.grade) this.applyBlurPreview();
   }
 
   setBlurPreview(blurs: Blur[] | null) {
     this.blurs = blurs;
-    if (!blurs) {
+    this.refreshPreview();
+  }
+
+  /** Preview a grade (pano-kit grade), baked the same way as blurs and together with them. Null: none. */
+  setGradePreview(grade: Grade | null) {
+    this.grade = grade && !isIdentityGrade(grade) ? grade : null;
+    this.refreshPreview();
+  }
+
+  private refreshPreview() {
+    if (!this.blurs && !this.grade) {
+      if (this.bakeTimer) clearTimeout(this.bakeTimer);
       if (this.shown) this.setTexture(this.shown);
       return;
     }
@@ -634,12 +648,12 @@ export class PanoEngine {
     if (this.bakeTimer) clearTimeout(this.bakeTimer);
     this.bakeTimer = setTimeout(() => {
       const src = this.bakeSource ?? this.shown;
-      if (!src || !this.blurs) return;
+      if (!src || (!this.blurs && !this.grade)) return;
       const sw = "naturalWidth" in src ? src.naturalWidth : src.width;
       const sh = "naturalHeight" in src ? src.naturalHeight : src.height;
       // Preview at up to 4096 wide: plenty to judge a blur, quick to redraw.
       const k = Math.min(1, 4096 / sw);
-      this.setTexture(bakeTo(src, Math.round(sw * k), Math.round(sh * k), this.blurs));
+      this.setTexture(bakeTo(src, Math.round(sw * k), Math.round(sh * k), this.blurs ?? [], this.grade));
     }, 90);
   }
 

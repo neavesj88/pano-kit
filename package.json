@@ -1,13 +1,15 @@
 {
   "name": "@neaves/pano-kit",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "private": true,
-  "description": "A 360° photo gallery kit: three.js viewer engine with sensors and WebXR, blur baking, derivative making, and S3/B2 upload signing.",
+  "description": "A 360° photo gallery kit: three.js viewer engine with sensors and WebXR, blur baking, 360-safe grading, derivative making, and S3/B2 upload signing.",
   "license": "MIT",
   "type": "module",
   "exports": {
     "./core": "./src/core.ts",
     "./bake": "./src/bake.ts",
+    "./grade": "./src/grade.ts",
+    "./jpeg": "./src/jpeg.ts",
     "./engine": "./src/engine.ts",
     "./derive": "./src/derive.ts",
     "./s3": "./src/s3.ts",
@@ -15,16 +17,21 @@
     "./vr": "./src/vr.ts"
   },
   "scripts": {
-    "check": "tsc --noEmit",
-    "test": "vitest run"
+    "check": "tsc --noEmit && tsc -p desk",
+    "test": "vitest run",
+    "desk": "node desk/server.ts --app",
+    "desk:serve": "node desk/server.ts",
+    "desk:build": "vite build --config desk/vite.config.ts"
   },
   "dependencies": {
     "aws4fetch": "1.0.20",
     "exifreader": "4.50.0"
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
     "@types/three": "0.186.0",
     "typescript": "5.6.3",
+    "vite": "8.3.4",
     "vitest": "4.1.9"
   }
 }

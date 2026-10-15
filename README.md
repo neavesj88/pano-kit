@@ -1,7 +1,7 @@
 # pano-kit
 
 The reusable half of a 360° photo gallery: a three.js viewer engine, blur
-baking, derivative making, and S3-compatible upload signing. No framework, no
+baking, 360-safe grading, derivative making, and S3-compatible upload signing. No framework, no
 database, no API of its own. An app supplies those; this supplies everything
 that is the same from one app to the next.
 
@@ -12,8 +12,10 @@ First used by neaves.au `/360`. Ported from `pano-test-rig.html` and its brief.
 | Import | Runs in | What it does | Needs |
 |---|---|---|---|
 | `core` | anywhere | Dated folders (`parseFolder`: `DD_MM_YYYY_place` into a date and label), views and `#view=` links, panorama-or-flat, location parsing (typed coordinates and every shape of Google Maps link), outbound map links, the derivative ladder, texture limits, blur-cap geometry, gallery ordering and day grouping, slugs, storage keys | nothing |
-| `bake` | browser | Blur regions painted into a copy of a photo: exact spherical caps on equirects, circles on flat photos | DOM canvas |
-| `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (thumbstick left/right snap-turns; trigger held drags the view round, clicked opens the label pointed at; A/X clicked is the next photo, held and swiped sideways next or previous, B/Y previous; labels drawn into the scene as dots with cards; a caption card for a few seconds, and a controls hint card on entering (setVrHint); each photo opens facing its start view); partial spheres from GPano; flat photos as a virtual print; openings (fly in; a true stereographic little planet that unfolds into the view; a 330° spin; none); crossfade between photos; auto-rotate at any speed; label pins; minimap; a nadir cover (badge disk, or any picture, turned and sized per photo); progressive textures; `renderStartThumb` | three.js r186, loaded by URL |
+| `bake` | browser | Blur regions painted into a copy of a photo: exact spherical caps on equirects, circles on flat photos; optionally a `grade` on top (`bakeTo(src, W, H, blurs, grade)`) | DOM canvas |
+| `grade` | anywhere | Tone and colour one pixel at a time, so an equirect's wrap seam cannot show: exposure and white balance in linear light, contrast, a tone curve for highlights/lights/darks/shadows, whites and blacks, vibrance and saturation (`applyGrade` on RGBA, `gradeLuts`, `normaliseGrade`) | nothing |
+| `jpeg` | anywhere | `withMetadata`: the original's EXIF, GPano XMP, ICC and IPTC segments copied onto a re-encoded JPEG, orientation reset and the stale EXIF thumbnail unlinked, without decoding either image | nothing |
+| `engine` | browser | `PanoEngine`: drag, pinch, wheel, keys; phone sensors with a watchdog; WebXR VR (thumbstick left/right snap-turns; trigger held drags the view round, clicked opens the label pointed at; A/X clicked is the next photo, held and swiped sideways next or previous, B/Y previous; labels drawn into the scene as dots with cards; a caption card for a few seconds, and a controls hint card on entering (setVrHint); each photo opens facing its start view); partial spheres from GPano; flat photos as a virtual print; openings (fly in; a true stereographic little planet that unfolds into the view; a 330° spin; none); crossfade between photos; auto-rotate at any speed; label pins; minimap; a nadir cover (badge disk, or any picture, turned and sized per photo); progressive textures; live blur and grade previews (`setBlurPreview`, `setGradePreview`); `renderStartThumb` | three.js r186, loaded by URL |
 | `derive` | browser | `fingerprint` (SHA-256), `readPhotoMeta` (EXIF date and camera, GPS, GPano), `makeRungs` (each size, blurs baked), `mapStrip`, `putSigned` (PUT with progress) | `exifreader` |
 | `timeline` | anywhere | `parseTimeline` (a Google Maps Timeline export: the phone's Timeline.json, the bare geo: array, Takeout's Records.json and Semantic Location History) and `locateAt` (where the phone was when a photo was taken, clock to clock), for cameras with no GPS | nothing |
 | `vr` | anywhere | The headset controls' judgement, pure: `snapTurn`, `pointedLabel`, `yawOf`, `wrapLines` | nothing |
@@ -163,6 +165,13 @@ labels (`invalidate()` inside). A still photo costs no GPU time; in VR it always
 draws. The pixel ratio is capped at `maxPixelRatio` (default 1.5). Pages should
 also avoid `backdrop-filter` over the canvas: the browser re-blurs it every frame.
 
+## pano-desk
+
+`desk/` is a local app built on the kit: browse trip folders, grade and blur a
+360, set its start view and labels, follow PhotoCraft live, and save
+`<name>_edited.jpg` with a `<name>.pano.json` recipe beside each original. See
+[desk/README.md](desk/README.md). It is not part of what gets vendored.
+
 ## Decisions, so they are not re-argued
 
 - three.js directly, not Photo Sphere Viewer (no WebXR), A-Frame (global scene,
@@ -170,6 +179,10 @@ also avoid `backdrop-filter` over the canvas: the browser re-blurs it every fram
 - The start view is the curator's choice, never an algorithm's, and thumbnails
   are rendered from it, so a card shows exactly the frame a visitor lands on.
 - Blurs are baked into published files, never applied at view time.
+- Grading is per pixel only. Local tone tools (Camera Raw's Shadows, Highlights,
+  Clarity, Dehaze) were measured drawing a line at the wrap seam: shift the
+  picture half a turn, process both, and they disagree by up to 7/255 near the
+  edges. A tone curve does that job here instead.
 - 8192 is the texture ceiling (some Adreno GPUs report 16384 and fail), 4096 on
   `deviceMemory <= 4`.
 - Panorama means 2:1 within 5%, as the brief says (the rig's code allowed 2.5%).

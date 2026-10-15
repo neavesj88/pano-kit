@@ -1,0 +1,10 @@
+{
+  "roots": ["D:\\Photos"],
+  "work": "D:\\EditingProjects",
+  "port": 5196,
+  "photocraft": {
+    "cli": "C:\\Program Files\\PhotoCraft\\photocraft-cli.exe",
+    "port": 7878,
+    "tokenFile": "C:\\Users\\you\\AppData\\Roaming\\Photocraft\\control.token"
+  }
+}

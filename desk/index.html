@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pano-desk</title>
+<link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+<aside id="side">
+  <header><strong>pano-desk</strong><button id="up" class="ghost" title="Up a folder">↑</button></header>
+  <div id="crumb"></div>
+  <nav id="dirs"></nav>
+  <div id="grid"></div>
+  <footer id="sidefoot"></footer>
+</aside>
+
+<main id="stage">
+  <canvas id="c"></canvas>
+  <div id="pins"></div>
+  <div id="mm"><canvas id="mmBase" width="560" height="280"></canvas><canvas id="mmBox" width="560" height="280"></canvas></div>
+  <div id="top">
+    <button id="prev" class="ghost" title="Previous photo  [">‹</button>
+    <div id="title">No photo open</div>
+    <button id="next" class="ghost" title="Next photo  ]">›</button>
+    <div class="seg" id="sources" role="group" aria-label="Which picture">
+      <button data-src="original" title="The camera's file. Your sliders and blurs apply on top.">Original</button>
+      <button data-src="photocraft" title="PhotoCraft's export from the working folder. Your sliders and blurs apply on top.">PhotoCraft</button>
+      <button data-src="edited" title="The _edited.jpg already saved beside the original, as it is.">Saved _edited</button>
+    </div>
+    <button id="before" title="Hold to see it without your sliders and blurs (or hold \)">Before</button>
+  </div>
+  <div id="modehint" hidden></div>
+  <div id="toast" hidden></div>
+  <div id="empty">Pick a folder on the left, then a photo.</div>
+</main>
+
+<aside id="panel">
+  <div class="tabs" role="tablist">
+    <button data-tab="adjust" class="on">Adjust</button>
+    <button data-tab="blur">Blur</button>
+    <button data-tab="view">View</button>
+    <button data-tab="pc">PhotoCraft</button>
+  </div>
+  <section id="tab-adjust" class="tab"></section>
+  <section id="tab-blur" class="tab" hidden></section>
+  <section id="tab-view" class="tab" hidden></section>
+  <section id="tab-pc" class="tab" hidden></section>
+  <div id="savebar">
+    <span id="dirty"></span>
+    <button id="saveSettings" title="Write the recipe (sliders, blurs, start view, labels) beside the original as .pano.json">Save settings</button>
+    <button id="saveJpeg" class="primary" title="Bake everything into <name>_edited.jpg beside the original, full size">Save _edited.jpg</button>
+  </div>
+</aside>
+<script type="module" src="./src/main.ts"></script>
+</body>
+</html>

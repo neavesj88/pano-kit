@@ -1,4 +1,4 @@
-/* Blur regions painted into a copy of a photo.
+/* Blur regions, and optionally a grade, painted into a copy of a photo.
  *
  * Use it for both the live preview and the published files, so what the
  * curator sees is exactly what visitors get. Blurs are baked, never applied at
@@ -6,6 +6,7 @@
  * from the test rig's paintBake.
  */
 import { capPolygon, clamp, type Blur } from "./core";
+import { applyGrade, isIdentityGrade, type Grade } from "./grade";
 
 type Source = HTMLImageElement | HTMLCanvasElement | ImageBitmap;
 
@@ -20,8 +21,8 @@ function traceCap(ctx: CanvasRenderingContext2D, poly: [number, number][], offse
   ctx.closePath();
 }
 
-/** Draws `src` into `ctx` at W×H with every blur region applied. */
-export function paintBake(ctx: CanvasRenderingContext2D, W: number, H: number, src: Source, blurs: Blur[]) {
+/** Draws `src` into `ctx` at W×H with every blur region applied, then the grade if one is given. */
+export function paintBake(ctx: CanvasRenderingContext2D, W: number, H: number, src: Source, blurs: Blur[], grade?: Grade | null) {
   const { w: sw0, h: sh0 } = sizeOf(src);
   // The source may be a different size from the target (a derivative, a thumbnail):
   // map source rectangles proportionally.
@@ -72,16 +73,22 @@ export function paintBake(ctx: CanvasRenderingContext2D, W: number, H: number, s
     ctx.restore();
   }
   ctx.filter = "none";
+  if (grade && !isIdentityGrade(grade)) {
+    const data = ctx.getImageData(0, 0, W, H);
+    applyGrade(data.data, grade);
+    ctx.putImageData(data, 0, 0);
+  }
 }
 
-/** A new canvas of the photo at W×H, blurs applied. */
-export function bakeTo(src: Source, W: number, H: number, blurs: Blur[]): HTMLCanvasElement {
+/** A new canvas of the photo at W×H, blurs and any grade applied. */
+export function bakeTo(src: Source, W: number, H: number, blurs: Blur[], grade?: Grade | null): HTMLCanvasElement {
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
-  const ctx = c.getContext("2d");
+  // Read back once per bake when grading: tell the browser so it keeps the pixels CPU-side.
+  const ctx = c.getContext("2d", grade && !isIdentityGrade(grade) ? { willReadFrequently: true } : undefined);
   if (!ctx) throw new Error("This browser could not make a 2D canvas");
-  paintBake(ctx, W, H, src, blurs);
+  paintBake(ctx, W, H, src, blurs, grade);
   return c;
 }
 
