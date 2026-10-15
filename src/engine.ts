@@ -172,7 +172,9 @@ function loadImage(url: string): Promise<HTMLImageElement> {
     // The bucket sends CORS headers; without this WebGL refuses the texture.
     img.crossOrigin = "anonymous";
     img.decoding = "async";
-    img.onload = () => resolve(img);
+    // Decoded before it is handed over: texImage2D of an undecoded image decodes
+    // it right there on the main thread (30 to 100 ms for a 4096 JPEG on a phone).
+    img.onload = () => (typeof img.decode === "function" ? img.decode().catch(() => {}) : Promise.resolve()).then(() => resolve(img));
     img.onerror = () => reject(new Error("The image could not be loaded"));
     img.src = url;
   });
@@ -340,6 +342,10 @@ export class PanoEngine {
   private vr = {
     base: null as XRReferenceSpace | null,
     yaw: 0,
+    /** The yaw the reference space was last offset by. */
+    applied: NaN,
+    /** Set when a photo opens: the next frame turns the world so the start view is where the head points. */
+    faceStart: false,
     armed: new Map<XRInputSource, boolean>(),
     drag: null as null | { source: XRInputSource; startRay: number; startYaw: number; swung: number },
     labels: null as T.Group | null,
@@ -381,8 +387,12 @@ export class PanoEngine {
     this.scene.add(this.camera);
     this.raycaster = new THREE.Raycaster();
     this.gyro.q = new THREE.Quaternion();
-    this.maxAniso = this.renderer.capabilities.getMaxAnisotropy();
-    this.cap = textureCap(this.renderer.capabilities.maxTextureSize, (navigator as any).deviceMemory, matchMedia("(pointer: coarse)").matches);
+    const handheld = matchMedia("(pointer: coarse)").matches;
+    this.maxAniso = Math.min(this.renderer.capabilities.getMaxAnisotropy(), handheld ? 4 : 16);
+    this.cap = textureCap(this.renderer.capabilities.maxTextureSize, (navigator as any).deviceMemory, handheld);
+    // three rebuilds its own state after a lost context (a backgrounded iOS tab,
+    // memory pressure); a renderer that only draws on change must then be told to.
+    canvas.addEventListener("webglcontextrestored", this.onContextRestored);
 
     this.resizeObs = new ResizeObserver(() => this.resize());
     this.resizeObs.observe(canvas);
@@ -404,6 +414,7 @@ export class PanoEngine {
     this.renderer.setAnimationLoop(null);
     this.resizeObs.disconnect();
     window.removeEventListener("keydown", this.onKey);
+    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     navigator.xr?.removeEventListener?.("sessiongranted", this.onSessionGranted);
     this.clearMesh();
     this.dropVrLabels();
@@ -573,7 +584,6 @@ export class PanoEngine {
     if (best && best !== first && bestUrl) {
       try {
         const big = await loadImage(bestUrl);
-        await big.decode().catch(() => {});
         if (token !== this.loadToken || this.disposed) return;
         this.shown = big;
         if (this.blurs) this.applyBlurPreview();
@@ -1456,6 +1466,11 @@ export class PanoEngine {
     }
   }
 
+  private onContextRestored = () => {
+    this.lastSig = "";
+    this.invalidate();
+  };
+
   private onSessionGranted = () => {
     // VR-to-VR navigation: a headset browser arriving from another immersive page.
     if (!this.xrSession) this.enterVR();
@@ -1474,6 +1489,8 @@ export class PanoEngine {
         this.xrSession = null;
         this.vr.base = null;
         this.vr.drag = null;
+        this.vr.applied = NaN;
+        this.vr.faceStart = false;
         this.vr.armed.clear();
         // The next session starts from its own reference space, not this one's turn.
         this.renderer.xr.setReferenceSpace(null as unknown as XRReferenceSpace);
@@ -1526,23 +1543,32 @@ export class PanoEngine {
   private applyVrYaw() {
     const base = this.vr.base;
     if (!base) return;
+    if (Math.abs(wrap180(this.vr.yaw - this.vr.applied)) < 0.02) return;
+    this.vr.applied = this.vr.yaw;
     const h = rad(this.vr.yaw) / 2;
     this.renderer.xr.setReferenceSpace(base.getOffsetReferenceSpace(new XRRigidTransform(undefined, { x: 0, y: Math.sin(h), z: 0, w: Math.cos(h) })));
   }
 
-  /** Each photo opens facing its start view, wherever the headset was turned. */
+  /** Each photo opens facing its start view: where the head points right now, not
+   *  where it pointed when the session began. The head's yaw needs a frame
+   *  (vrTick); until then the world is turned as if the head were at rest. */
   private faceStartInVR() {
     this.vr.yaw = wrap180(this.start.yaw);
     this.vr.drag = null;
+    this.vr.faceStart = true;
     this.applyVrYaw();
   }
 
-  /** Where a controller points (its -z), in `space`. */
+  /** The -z of an orientation: where a controller or the head points. */
+  private forwardOf(o: { x: number; y: number; z: number; w: number }): Vec3 {
+    const { x, y, z, w } = o;
+    return { x: -2 * (x * z + w * y), y: -2 * (y * z - w * x), z: -(1 - 2 * (x * x + y * y)) };
+  }
+
+  /** Where a controller points, in `space`. */
   private rayOf(frame: XRFrame, source: XRInputSource, space: XRReferenceSpace): Vec3 | null {
     const pose = frame.getPose(source.targetRaySpace, space);
-    if (!pose) return null;
-    const { x, y, z, w } = pose.transform.orientation;
-    return { x: -2 * (x * z + w * y), y: -2 * (y * z - w * x), z: -(1 - 2 * (x * x + y * y)) };
+    return pose ? this.forwardOf(pose.transform.orientation) : null;
   }
 
   private vrTick() {
@@ -1550,10 +1576,22 @@ export class PanoEngine {
     const s = this.xrSession, base = this.vr.base;
     if (!frame || !s || !base) return;
     let turned = false;
+    if (this.vr.faceStart) {
+      // What is seen = head yaw in the base space + the world's turn: set the turn
+      // so the start view is straight ahead of wherever the head is now.
+      const head = frame.getViewerPose(base);
+      if (head) {
+        this.vr.faceStart = false;
+        this.vr.yaw = wrap180(this.start.yaw - yawOf(this.forwardOf(head.transform.orientation)));
+        turned = true;
+      }
+    }
     for (const src of s.inputSources) {
       const ax = src.gamepad?.axes;
-      if (!ax || ax.length < 4) continue; // xr-standard: the thumbstick is axes 2 and 3
-      const st = snapTurn(ax[2], this.vr.armed.get(src) ?? true);
+      if (!ax || ax.length < 2) continue;
+      // xr-standard puts the thumbstick at axes 2 and 3 (0 and 1 are a touchpad); a
+      // controller with only two axes has its stick there.
+      const st = snapTurn(ax.length >= 4 ? ax[2] : ax[0], this.vr.armed.get(src) ?? true);
       this.vr.armed.set(src, st.armed);
       if (st.turn) {
         this.vr.yaw = wrap180(this.vr.yaw + st.turn * SNAP_DEG);
