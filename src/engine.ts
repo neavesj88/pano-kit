@@ -330,6 +330,7 @@ export class PanoEngine {
   private hotspots: Hotspot[] = [];
   private labelsShown = true;
   private captionLines: string[] | null = null;
+  private hintLines: string[] | null = null;
   private pins: HTMLButtonElement[] = [];
   private mmDrag = false;
   private settings: ViewerSettings = { ...DEFAULT_VIEWER_SETTINGS };
@@ -351,6 +352,9 @@ export class PanoEngine {
     /** The caption card, and when it goes. */
     caption: null as T.Sprite | null,
     captionUntil: 0,
+    /** The controls hint shown on entering, and when it goes. */
+    hint: null as T.Sprite | null,
+    hintUntil: 0,
     armed: new Map<XRInputSource, boolean>(),
     /** A/X held: where the ray pointed when it went down, and how far it has swept since. */
     hold: new Map<XRInputSource, { t0: number; startRay: number; delta: number; swung: number }>(),
@@ -427,6 +431,7 @@ export class PanoEngine {
     this.clearMesh();
     this.dropVrLabels();
     this.dropVrCaption();
+    this.dropVrHint();
     this.vr.dotTex?.dispose();
     this.texture?.dispose();
     this.finishCrossfade();
@@ -1183,6 +1188,13 @@ export class PanoEngine {
     if (this.vr.labels) this.vr.labels.visible = on;
   }
 
+  /** How the controls work, as a card shown for fifteen seconds on entering the
+   *  headset, below the caption: the first line as a title, the rest as lines. */
+  setVrHint(lines: string[] | null) {
+    const kept = lines?.map(l => l.trim()).filter(Boolean) ?? [];
+    this.hintLines = kept.length ? kept : null;
+  }
+
   setFigureImage(src: (CanvasImageSource & { width: number; height: number }) | null) {
     this.figureImage = src ? { src, serial: (this.figureImage?.serial ?? 0) + 1 } : null;
     this.updateCovers();
@@ -1563,6 +1575,7 @@ export class PanoEngine {
         this.renderer.xr.setReferenceSpace(null as unknown as XRReferenceSpace);
         this.dropVrLabels();
         this.dropVrCaption();
+        this.dropVrHint();
         Object.assign(this.view, this.start);
         this.resize();
         this.cb.onVR?.(false);
@@ -1589,6 +1602,7 @@ export class PanoEngine {
       this.vr.base = this.renderer.xr.getReferenceSpace();
       this.faceStartInVR();
       this.buildVrLabels();
+      this.showVrHint();
       this.cb.onVR?.(true);
     } catch (e: any) {
       this.cb.onToast?.(`Could not start VR: ${e?.message ?? e}`, "err");
@@ -1641,6 +1655,7 @@ export class PanoEngine {
     const s = this.xrSession, base = this.vr.base;
     if (!frame || !s || !base) return;
     if (this.vr.caption && performance.now() > this.vr.captionUntil) this.dropVrCaption();
+    if (this.vr.hint && performance.now() > this.vr.hintUntil) this.dropVrHint();
     let turned = false;
     if (this.vr.faceStart) {
       // What is seen = head yaw in the base space + the world's turn: set the turn
@@ -1780,6 +1795,33 @@ export class PanoEngine {
     this.vr.captionUntil = performance.now() + 8000;
   }
 
+  /** The controls, below the caption, for fifteen seconds after entering. */
+  private showVrHint() {
+    this.dropVrHint();
+    if (!this.renderer.xr.isPresenting || !this.hintLines) return;
+    const THREE = this.THREE;
+    const at = RADIUS * 0.9;
+    const [title, ...rest] = this.hintLines;
+    const card = this.vrCard(title, rest.join("\n") || undefined);
+    const w = 2 * at * Math.tan(rad(40) / 2);
+    card.sprite.scale.set(w, w * card.aspect, 1);
+    card.sprite.position.copy(lookDir(THREE, this.start.yaw, -44).multiplyScalar(at));
+    card.sprite.renderOrder = 12;
+    this.scene.add(card.sprite);
+    this.vr.hint = card.sprite;
+    this.vr.hintUntil = performance.now() + 15000;
+  }
+
+  private dropVrHint() {
+    const c = this.vr.hint;
+    if (!c) return;
+    this.scene.remove(c);
+    const m = c.material as T.SpriteMaterial;
+    m.map?.dispose();
+    m.dispose();
+    this.vr.hint = null;
+  }
+
   private dropVrCaption() {
     const c = this.vr.caption;
     if (!c) return;
@@ -1837,7 +1879,7 @@ export class PanoEngine {
     ctx.font = font;
     const lines = wrapLines(text, W - pad * 2, s => ctx.measureText(s).width, 5);
     ctx.font = subFont;
-    const subLines = sub ? wrapLines(sub, W - pad * 2, s => ctx.measureText(s).width, 2) : [];
+    const subLines = sub ? sub.split("\n").flatMap(l => wrapLines(l, W - pad * 2, s => ctx.measureText(s).width, 2)).slice(0, 10) : [];
     c.width = W;
     c.height = pad * 2 + Math.max(1, lines.length) * lineH + (subLines.length ? 8 + subLines.length * subH : 0);
     ctx.fillStyle = "rgba(10,8,18,.92)"; // a resize clears the context's state, so the fonts are set again below
