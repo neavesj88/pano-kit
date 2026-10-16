@@ -1,7 +1,8 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { isPano, readJpegHeader } from "../header.ts";
-import { editedPath, isEditedName, isHiddenDir, isInside, sidecarPath, workCopyPath, workRelative } from "../paths.ts";
+import { cleanTags, detailsFromRecipe, isLinkUrl } from "../details.ts";
+import { editedPath, isEditedName, isHiddenDir, isInside, overlayFileName, sidecarPath, workCopyPath, workRelative } from "../paths.ts";
 
 const win = process.platform === "win32";
 const root = win ? "E:\\" : "/photos";
@@ -16,21 +17,32 @@ describe("paths", () => {
     if (win) expect(isInside("E:\\Trip", "e:\\trip\\IMG.JPG")).toBe(true);
   });
 
-  it("names its copies beside the original, never as the original", () => {
-    const o = p("04_10_2026_paris", "IMG_1.jpg");
-    expect(editedPath(o)).toBe(p("04_10_2026_paris", "IMG_1_edited.jpg"));
-    expect(sidecarPath(o)).toBe(p("04_10_2026_paris", "IMG_1.pano.json"));
-    expect(editedPath(p("a", "IMG.JPEG"))).toBe(p("a", "IMG_edited.jpg"));
+  it("saves copies as edited\\Edited_<name>.jpg beside the original, never as the original", () => {
+    const o = p("04_10_2026_paris", "pano", "IMG_1.jpg");
+    expect(editedPath(o)).toBe(p("04_10_2026_paris", "pano", "edited", "Edited_IMG_1.jpg"));
+    expect(sidecarPath(o)).toBe(p("04_10_2026_paris", "pano", "IMG_1.pano.json"));
+    expect(editedPath(p("a", "IMG.JPEG"))).toBe(p("a", "edited", "Edited_IMG.jpg"));
+    expect(isEditedName("Edited_IMG_1.jpg")).toBe(true);
+    expect(isEditedName(editedPath(o))).toBe(true);
+    // Copies named the old way are still copies, never originals.
     expect(isEditedName("IMG_1_edited.jpg")).toBe(true);
-    expect(isEditedName("IMG_1_Edited.JPG")).toBe(true);
     expect(isEditedName("IMG_1.jpg")).toBe(false);
+    expect(isEditedName("Edited_.jpg")).toBe(false);
   });
 
   it("puts PhotoCraft's copy in the working folder under the trip folder's name", () => {
     const work = win ? "D:\\Work" : "/work";
     const copy = workCopyPath(p("08_10_2026_rome", "IMG_7.jpg"), work);
     expect(copy).toBe(path.join(work, "08_10_2026_rome", "IMG_7.jpg"));
-    expect(workRelative(editedPath(copy), work)).toBe("08_10_2026_rome/IMG_7_edited.jpg");
+    expect(workRelative(editedPath(copy), work)).toBe("08_10_2026_rome/edited/Edited_IMG_7.jpg");
+  });
+
+  it("keeps the folders below the root, so two trips' pano folders stay apart", () => {
+    const work = win ? "D:\Work" : "/work";
+    const a = workCopyPath(p("27_09_2026_berlin", "pano", "IMG_1.jpg"), work, [root]);
+    const b = workCopyPath(p("08_10_2026_rome", "pano", "IMG_1.jpg"), work, [root]);
+    expect(a).toBe(path.join(work, "27_09_2026_berlin", "pano", "IMG_1.jpg"));
+    expect(a).not.toBe(b);
   });
 
   it("skips folders nobody browses", () => {
@@ -38,6 +50,16 @@ describe("paths", () => {
     expect(isHiddenDir("System Volume Information")).toBe(true);
     expect(isHiddenDir(".git")).toBe(true);
     expect(isHiddenDir("04_10_2026_paris")).toBe(false);
+    expect(isHiddenDir("IMG_1.overlays")).toBe(true);
+    expect(isHiddenDir("edited")).toBe(true);
+    expect(isHiddenDir("edited photos")).toBe(false);
+  });
+
+  it("makes dropped-in photo names safe and keeps only image types", () => {
+    expect(overlayFileName("Raising a flag (1945)?.JPG")).toBe("Raising a flag _1945_.jpg");
+    expect(overlayFileName("..\\..\\evil.png")).toBe("evil.png");
+    expect(overlayFileName("../../evil.png")).toBe("evil.png");
+    expect(overlayFileName("notes.txt")).toBeNull();
   });
 });
 
@@ -67,3 +89,26 @@ describe("header", () => {
     expect(() => readJpegHeader(new Uint8Array([1, 2, 3, 4]))).toThrow(/Not a JPEG/);
   });
 });
+
+describe("details", () => {
+  it("turns a recipe into what goes in the file, dropping what neaves.au would refuse", () => {
+    const d = detailsFromRecipe({
+      title: "  Reichstag  ", description: "Roof", place: "Berlin", tags: ["a", "A", " b ", ""], rating: 4,
+      location: { lat: 52.5, lng: 13.4, approx: true }, start: { yaw: 10, pitch: 5, fov: 80 },
+      hotspots: [{ yaw: 1, pitch: 2, text: " Flag " }, { yaw: 1, pitch: 2, text: "  " }], linkUrl: "https://example.org", linkLabel: "More",
+    });
+    expect(d).toEqual({
+      title: "Reichstag", description: "Roof", place: "Berlin", tags: ["a", "b"], rating: 4, location: { lat: 52.5, lng: 13.4 },
+      gallery: { start: { yaw: 10, pitch: 5, fov: 80 }, hotspots: [{ yaw: 1, pitch: 2, text: "Flag" }], linkUrl: "https://example.org", linkLabel: "More" },
+    });
+  });
+
+  it("leaves out defaults and anything malformed", () => {
+    expect(detailsFromRecipe({ start: { yaw: 0, pitch: 0, fov: 75 }, rating: 0, location: { lat: 99, lng: 0 }, linkUrl: "javascript:alert(1)", linkLabel: "x" })).toEqual({});
+    expect(detailsFromRecipe(null)).toEqual({});
+    expect(isLinkUrl("https://a.b/c")).toBe(true);
+    expect(isLinkUrl("ftp://a")).toBe(false);
+    expect(cleanTags(Array.from({ length: 30 }, (_, i) => "t" + i))).toHaveLength(20);
+  });
+});
+

@@ -15,7 +15,7 @@ button.primary { background: var(--accent2); border-color: var(--accent2); color
 button.on { background: var(--accent2); border-color: var(--accent2); color: #fff; }
 button.ghost { background: transparent; border-color: transparent; }
 input[type=range] { width: 100%; accent-color: var(--accent); }
-input[type=number], input[type=text], select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
+input[type=number], input[type=text], select, textarea { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
 input[type=number] { width: 62px; text-align: right; }
 
 #side, #panel { background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
@@ -81,3 +81,16 @@ input[type=number] { width: 62px; text-align: right; }
 .status.warn { border-color: #7a5d16; }
 #savebar { display: flex; gap: 6px; align-items: center; padding: 10px; border-top: 1px solid var(--line); }
 #dirty { flex: 1; color: var(--warn); }
+
+/* Info tab */
+input.wide, textarea { width: 100%; }
+textarea { resize: vertical; line-height: 1.45; }
+.tab p.note.warn { color: var(--warn); }
+button.link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; }
+.stars { display: flex; gap: 4px; align-items: center; }
+.stars button { padding: 2px 8px; font-size: 16px; color: var(--muted); }
+.stars button.on { color: var(--warn); background: var(--panel2); border-color: var(--line); }
+label.filebtn { display: inline-block; background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; }
+label.filebtn:hover { border-color: #55555f; }
+label.filebtn.disabled { opacity: .45; cursor: default; pointer-events: none; }
+.tabs { flex-wrap: wrap; }

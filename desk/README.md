@@ -14,6 +14,14 @@ going through a trip's photos, fixing them, and deciding how each one opens.
   is baked into the saved file with pano-kit `bake`, the same code a gallery
   publishes with.
 - **View**: the start view, labels, and a preview of the gallery's bottom cover.
+- **Info**: name, place, map location (coordinates or a Google Maps link), description,
+  tags, rating and a read-more link: what a gallery shows beside the photo.
+- **Then & now**: set an old flat photo into the 360 where it was taken. With the
+  tab open, drag the photo to move it (it stays in true perspective: it is drawn as
+  the camera that took it would have seen it), scroll on it to size it, Shift+scroll
+  to turn it; sliders for size, turn, opacity, soft edge and position. PNG cut-outs
+  keep their transparency. It is baked into the saved file with pano-kit `overlay`
+  and `bake`, the same pinhole mapping as a hand-run `pano_blend.py`.
 - **PhotoCraft**: open the photo in PhotoCraft, and with Live on, see PhotoCraft's
   picture in 360 a moment after each pause in editing.
 - **Before**: hold the button, or hold `\`, to see it without your sliders and blurs.
@@ -25,11 +33,12 @@ Beside the original, which is only ever read:
 
 | File | What |
 |---|---|
-| `<name>_edited.jpg` | Your edit baked in at full size, JPEG quality 95, with the original's EXIF and GPano metadata copied on (pano-kit `jpeg`), so other 360 viewers still see a 360. Replacing one asks first. |
-| `<name>.pano.json` | The recipe: base picture, grade, blurs, start view, labels, cover. Opening the photo again restores it. |
+| `edited\Edited_<name>.jpg` | In an `edited` folder beside the originals (made when first needed, and hidden from the folder list). Your edit baked in at full size, JPEG quality 95, with the original's EXIF and GPano metadata copied on (pano-kit `jpeg`), so other 360 viewers still see a 360, and the Info tab's details written in (XMP title, description, keywords, rating, place; EXIF GPS; start view, labels and link in `panokit:Gallery`), which neaves.au's uploader reads. With no sliders or blurs it is the original's own pixels, not re-encoded. Save settings rewrites the details into an existing copy without touching its pixels. Replacing one asks first. Copies named the old way (`<name>_edited.jpg`, before 16 Oct 2026) are still recognised as copies and never listed as originals, but are not moved. |
+| `<name>.pano.json` | The recipe: base picture, grade, blurs, start view, labels, cover, and the Info tab's `place`, `location` (`{lat, lng, approx, source}`; `approx` stays true until the spot is set by hand or marked right), `title`, `description`, `tags`, `rating`, `linkUrl` and `linkLabel`, and `overlays` (each `{file, yaw, pitch, hfov, roll, opacity, feather}`). Opening the photo again restores it. |
+| `<name>.overlays\` | The photos set into it, copied here when added so the recipe can name them. |
 
-In the working folder (PhotoCraft's automation root): `<trip folder>\<name>.jpg`,
-a copy of the original for PhotoCraft to open, and `<name>_edited.jpg`, what Live
+In the working folder (PhotoCraft's automation root): `<folders below the root>\<name>.jpg`,
+a copy of the original for PhotoCraft to open, and `edited\Edited_<name>.jpg` beside it, what Live
 exports from PhotoCraft. Thumbnails are cached under `%LOCALAPPDATA%\pano-desk`.
 
 ## Running it
@@ -66,7 +75,7 @@ rather than opening a second one (PhotoCraft would).
 **Live** asks PhotoCraft every 1.2 s what its front document is and how many
 edits it has had. When that is this photo (matched by its path, or by its file
 name if you opened the original by hand) and the edit count has stood still
-for 0.7 s, it exports the document, flattened, to `<name>_edited.jpg` in the
+for 0.7 s, it exports the document, flattened, to `edited\Edited_<name>.jpg` in the
 working folder. Your layers stay in PhotoCraft. pano-desk watches the folder
 and shows the new file, keeping your view. PhotoCraft has to be running from
 its "(Claude)" shortcut, which starts the control port with its token.

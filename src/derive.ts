@@ -8,6 +8,7 @@
  */
 import type { Blur } from "./core";
 import { bakeTo, canvasToJpeg } from "./bake";
+import type { GalleryDetails } from "./jpeg";
 
 /** SHA-256 of the bytes, hex: the same photo is the same photo whatever it is called. */
 export async function fingerprint(file: Blob): Promise<string> {
@@ -39,6 +40,30 @@ export interface PhotoMeta {
   lng: number | null;
   camera: string | null;
   gpano: Gpano | null;
+  /** What someone wrote about it before upload (pano-kit jpeg's PhotoDetails, or any XMP editor): null or empty when absent. */
+  title: string | null;
+  description: string | null;
+  tags: string[];
+  rating: number | null;
+  place: string | null;
+  gallery: GalleryDetails | null;
+}
+
+const isView = (v: any) => v && [v.yaw, v.pitch, v.fov].every(Number.isFinite);
+const isSpot = (h: any) => h && typeof h.text === "string" && ([h.yaw, h.pitch].every(Number.isFinite) || [h.u, h.v].every(Number.isFinite));
+
+/** pano-kit's own XMP field, read defensively: a hand-edited or foreign file gets only what is well formed. */
+export function readGallery(json: string | undefined): GalleryDetails | null {
+  if (!json) return null;
+  let g: any;
+  try { g = JSON.parse(json); } catch { return null; }
+  if (!g || typeof g !== "object") return null;
+  const out: GalleryDetails = {};
+  if (isView(g.start)) out.start = { yaw: g.start.yaw, pitch: g.start.pitch, fov: g.start.fov };
+  if (Array.isArray(g.hotspots)) out.hotspots = g.hotspots.filter(isSpot);
+  if (typeof g.linkUrl === "string") out.linkUrl = g.linkUrl;
+  if (typeof g.linkLabel === "string") out.linkLabel = g.linkLabel;
+  return Object.keys(out).length ? out : null;
 }
 
 /**
@@ -69,7 +94,10 @@ const str = (tag: any): string | undefined => {
 /** EXIF date and camera, GPS, and GPano crop. Missing metadata is normal (re-encoded
  *  copies have none) and comes back as nulls, never as an error. Needs `exifreader`. */
 export async function readPhotoMeta(file: Blob): Promise<PhotoMeta> {
-  const meta: PhotoMeta = { takenAt: null, lat: null, lng: null, camera: null, gpano: null };
+  const meta: PhotoMeta = {
+    takenAt: null, lat: null, lng: null, camera: null, gpano: null,
+    title: null, description: null, tags: [], rating: null, place: null, gallery: null,
+  };
   try {
     const ExifReader = (await import("exifreader")).default;
     const tags: any = ExifReader.load(await file.slice(0, 4 * 1024 * 1024).arrayBuffer(), { expanded: true });
@@ -80,6 +108,14 @@ export async function readPhotoMeta(file: Blob): Promise<PhotoMeta> {
     meta.takenAt = exifDate(str(tags.exif?.DateTimeOriginal), str(tags.exif?.OffsetTimeOriginal));
     meta.camera = [str(tags.exif?.Make), str(tags.exif?.Model)].filter(Boolean).join(" ") || null;
     const x = tags.xmp ?? {};
+    const text = (t: any) => (typeof t?.description === "string" && t.description.trim() ? t.description.trim() : null);
+    meta.title = text(x.title);
+    meta.description = text(x.description);
+    meta.tags = Array.isArray(x.subject?.value) ? x.subject.value.map((v: any) => String(v.description ?? v.value ?? "").trim()).filter(Boolean) : [];
+    const rating = num(x.Rating);
+    meta.rating = rating != null && rating >= 0 && rating <= 5 ? Math.round(rating) : null;
+    meta.place = text(x.Location);
+    meta.gallery = readGallery(x.Gallery?.description);
     const fullW = num(x.FullPanoWidthPixels), fullH = num(x.FullPanoHeightPixels);
     const cropW = num(x.CroppedAreaImageWidthPixels), cropH = num(x.CroppedAreaImageHeightPixels);
     if (fullW && fullH && cropW && cropH) {

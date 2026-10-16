@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { freshenExif, jpegSegments, withMetadata } from "../src/jpeg";
+import { buildXmp, freshenExif, gpanoProperties, jpegSegments, withMetadata, type PhotoDetails } from "../src/jpeg";
+import { readGallery, readPhotoMeta } from "../src/derive";
 
 const bytes = (...parts: (number[] | Uint8Array | string)[]) =>
   new Uint8Array(parts.flatMap(p => (typeof p === "string" ? [...p].map(c => c.charCodeAt(0)) : [...p])));
@@ -69,4 +70,58 @@ describe("jpeg", () => {
     const out = withMetadata(encoded, bare);
     expect(jpegSegments(out).segments.map(s => s.marker)).toEqual([0xdb, 0xc0, 0xda]);
   });
+
+  const details: PhotoDetails = {
+    title: "The Reichstag & me",
+    description: "Roof terrace.\nWhere the 1945 photo was taken.",
+    tags: ["berlin", "ww2", "then & now"],
+    rating: 4,
+    place: "Reichstag roof, Berlin",
+    location: { lat: 52.518623, lng: -13.376198 },
+    gallery: { start: { yaw: -46, pitch: 12, fov: 80 }, hotspots: [{ yaw: 10, pitch: 5, text: "Soviet flag, 2 May 1945" }], linkUrl: "https://example.org/a?b=1&c=2", linkLabel: "Read more" },
+  };
+  const read = (b: Uint8Array) => readPhotoMeta(new Blob([b]));
+
+  it("writes details a gallery reads back, and keeps the camera's own metadata", async () => {
+    const meta = await read(withMetadata(encoded, original, details));
+    expect(meta.title).toBe("The Reichstag & me");
+    expect(meta.description).toBe("Roof terrace.\nWhere the 1945 photo was taken.");
+    expect(meta.tags).toEqual(["berlin", "ww2", "then & now"]);
+    expect(meta.rating).toBe(4);
+    expect(meta.place).toBe("Reichstag roof, Berlin");
+    expect(meta.lat).toBeCloseTo(52.518623, 5);
+    expect(meta.lng).toBeCloseTo(-13.376198, 5);
+    expect(meta.gallery).toEqual(details.gallery);
+    expect(meta.camera).toBe("Lun");
+    const out = withMetadata(encoded, original, details);
+    expect(gpanoProperties(new TextDecoder().decode(out))).toContainEqual(["ProjectionType", "equirectangular"]);
+  });
+
+  it("adds GPS to a file that had no EXIF at all", async () => {
+    const bare = bytes([0xff, 0xd8], seg(0xdb, [0]), sos, [1, 0xff, 0xd9]);
+    const meta = await read(withMetadata(bare, bare, { location: { lat: -31.95, lng: 115.86 } }));
+    expect(meta.lat).toBeCloseTo(-31.95, 5);
+    expect(meta.lng).toBeCloseTo(115.86, 5);
+  });
+
+  it("keeps pixels untouched when the original is passed as the image too", () => {
+    const out = withMetadata(original, original, { title: "x" });
+    const a = jpegSegments(original), b = jpegSegments(out);
+    expect([...out.subarray(b.scanStart)]).toEqual([...original.subarray(a.scanStart)]);
+  });
+
+  it("reads nothing into a file with no details, and ignores a malformed gallery field", async () => {
+    const meta = await read(withMetadata(encoded, original));
+    expect([meta.title, meta.description, meta.rating, meta.place, meta.gallery]).toEqual([null, null, null, null, null]);
+    expect(meta.tags).toEqual([]);
+    expect(readGallery("{not json")).toBeNull();
+    expect(readGallery(JSON.stringify({ start: { yaw: "x" }, hotspots: [{ text: 3 }, { yaw: 1, pitch: 2, text: "ok" }] }))).toEqual({ hotspots: [{ yaw: 1, pitch: 2, text: "ok" }] });
+  });
+
+  it("escapes what it writes, so a title cannot break the XML", () => {
+    const xmp = buildXmp(null, { title: 'a "<b>" & c' });
+    expect(xmp).toContain("a &quot;&lt;b&gt;&quot; &amp; c");
+    expect(() => withMetadata(encoded, original, { description: "x".repeat(70000) })).toThrow(/too long/);
+  });
 });
+

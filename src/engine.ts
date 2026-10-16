@@ -21,6 +21,7 @@ import {
 } from "./core";
 import { bakeTo } from "./bake";
 import { isIdentityGrade, type Grade } from "./grade";
+import { overlayCamera, type Overlay } from "./overlay";
 import { DRAG_DEG, SNAP_DEG, pointedLabel, pressOutcome, snapTurn, wrapLines, yawOf, type Vec3 } from "./vr";
 
 export type Three = typeof T;
@@ -86,6 +87,29 @@ export interface EngineOptions {
 const RADIUS = 500;
 const FLAT_D = 300;    // a flat photo hangs 300 units ahead...
 const FLAT_VFOV = 60;  // ...and spans 60° of height: a big print, in VR too
+
+/* An overlaid photo's plane: its picture with the soft edge and opacity worked
+ * out as overlay.ts's edgeMask does, so the live view and the bake agree. */
+const OVERLAY_VERT = `
+varying vec2 vUv;
+void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+`;
+const OVERLAY_FRAG = `
+uniform sampler2D map;
+uniform float opacity;
+uniform float feather; // share of the shorter side
+uniform vec2 size;     // the photo in pixels
+varying vec2 vUv;
+void main() {
+  vec4 c = texture2D(map, vUv);
+  vec2 p = vUv * size;
+  float d = min(min(p.x, size.x - p.x), min(p.y, size.y - p.y));
+  float band = feather * min(size.x, size.y);
+  float m = band > 0.0 ? smoothstep(0.0, 1.0, d / band) : 1.0;
+  gl_FragColor = vec4(c.rgb, c.a * m * opacity);
+  #include <colorspace_fragment>
+}
+`;
 
 /* The little planet, done properly: every pixel is a ray from a point d behind
  * the sphere's centre. d = 1 is a stereographic projection (the "tiny planet"
@@ -431,6 +455,7 @@ export class PanoEngine {
     this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     navigator.xr?.removeEventListener?.("sessiongranted", this.onSessionGranted);
     this.clearMesh();
+    this.setOverlays(null);
     this.dropVrLabels();
     this.dropVrCaption();
     this.dropVrHint();
@@ -527,6 +552,7 @@ export class PanoEngine {
     else this.mesh.rotation.y = -Math.PI / 2;
     this.scene.add(this.mesh);
     for (const c of [this.disk, this.figure]) if (c) c.mesh.visible = !this.isFlat;
+    for (const o of this.overlayMeshes) o.mesh.visible = !this.isFlat;
   }
 
   private setTexture(src: HTMLImageElement | HTMLCanvasElement) {
@@ -1207,6 +1233,73 @@ export class PanoEngine {
   setVrHint(lines: string[] | null) {
     const kept = lines?.map(l => l.trim()).filter(Boolean) ?? [];
     this.hintLines = kept.length ? kept : null;
+  }
+
+  /* ------------------------------------------------ overlaid photos */
+
+  private overlayMeshes: { mesh: T.Mesh; tex: T.Texture; image: object }[] = [];
+
+  /**
+   * Flat photos set into the 360 (pano-kit overlay), drawn live as planes in
+   * the scene: a plane seen from the centre is exactly the pinhole picture the
+   * overlay describes, so dragging one redraws at frame rate. The saved file
+   * gets the same placement by bake's inverse mapping. Pass the same image
+   * object again to move one without re-uploading its texture. Null: none.
+   */
+  setOverlays(list: { image: CanvasImageSource & { width: number; height: number }; overlay: Overlay }[] | null) {
+    this.invalidate();
+    const THREE = this.THREE;
+    const keep: typeof this.overlayMeshes = [];
+    for (const { image, overlay } of list ?? []) {
+      let entry = this.overlayMeshes.find(e => e.image === image && !keep.includes(e));
+      if (!entry) {
+        const tex = new THREE.Texture(image as any);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = this.maxAniso;
+        tex.needsUpdate = true;
+        const mat = new THREE.ShaderMaterial({
+          uniforms: { map: { value: tex }, opacity: { value: 1 }, feather: { value: 0 }, size: { value: new THREE.Vector2(1, 1) } },
+          vertexShader: OVERLAY_VERT,
+          fragmentShader: OVERLAY_FRAG,
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+        mesh.matrixAutoUpdate = false;
+        mesh.renderOrder = 3; // over the photo, under the nadir cover
+        this.scene.add(mesh);
+        entry = { mesh, tex, image };
+      }
+      const w = image.width, h = image.height;
+      const cam = overlayCamera(overlay, w, h);
+      const D = RADIUS * 0.8;
+      const pw = (D * w) / cam.f, ph = (D * h) / cam.f;
+      const m = entry.mesh;
+      m.matrix.makeBasis(
+        new THREE.Vector3(...cam.right),
+        new THREE.Vector3(...cam.up),
+        new THREE.Vector3(-cam.fwd[0], -cam.fwd[1], -cam.fwd[2]),
+      );
+      m.matrix.scale(new THREE.Vector3(pw, ph, 1));
+      m.matrix.setPosition(cam.fwd[0] * D, cam.fwd[1] * D, cam.fwd[2] * D);
+      m.matrixWorldNeedsUpdate = true;
+      m.visible = !this.isFlat;
+      const u = (m.material as T.ShaderMaterial).uniforms;
+      u.opacity.value = overlay.opacity;
+      u.feather.value = overlay.feather;
+      u.size.value.set(w, h);
+      keep.push(entry);
+    }
+    for (const e of this.overlayMeshes) {
+      if (keep.includes(e)) continue;
+      this.scene.remove(e.mesh);
+      e.mesh.geometry.dispose();
+      (e.mesh.material as T.Material).dispose();
+      e.tex.dispose();
+    }
+    this.overlayMeshes = keep;
   }
 
   setFigureImage(src: (CanvasImageSource & { width: number; height: number }) | null) {

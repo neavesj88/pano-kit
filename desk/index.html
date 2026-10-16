@@ -26,7 +26,7 @@
     <div class="seg" id="sources" role="group" aria-label="Which picture">
       <button data-src="original" title="The camera's file. Your sliders and blurs apply on top.">Original</button>
       <button data-src="photocraft" title="PhotoCraft's export from the working folder. Your sliders and blurs apply on top.">PhotoCraft</button>
-      <button data-src="edited" title="The _edited.jpg already saved beside the original, as it is.">Saved _edited</button>
+      <button data-src="edited" title="The copy already saved in the edited folder (edited\Edited_&lt;name&gt;.jpg), as it is.">Saved edit</button>
     </div>
     <button id="before" title="Hold to see it without your sliders and blurs (or hold \)">Before</button>
   </div>
@@ -40,16 +40,20 @@
     <button data-tab="adjust" class="on">Adjust</button>
     <button data-tab="blur">Blur</button>
     <button data-tab="view">View</button>
+    <button data-tab="info">Info</button>
+    <button data-tab="overlay" title="Set an old photo into the 360">Then &amp; now</button>
     <button data-tab="pc">PhotoCraft</button>
   </div>
   <section id="tab-adjust" class="tab"></section>
   <section id="tab-blur" class="tab" hidden></section>
   <section id="tab-view" class="tab" hidden></section>
+  <section id="tab-info" class="tab" hidden></section>
+  <section id="tab-overlay" class="tab" hidden></section>
   <section id="tab-pc" class="tab" hidden></section>
   <div id="savebar">
     <span id="dirty"></span>
-    <button id="saveSettings" title="Write the recipe (sliders, blurs, start view, labels) beside the original as .pano.json">Save settings</button>
-    <button id="saveJpeg" class="primary" title="Bake everything into <name>_edited.jpg beside the original, full size">Save _edited.jpg</button>
+    <button id="saveSettings" title="Write the recipe (sliders, blurs, start view, labels, place, location, description, tags) beside the original as .pano.json">Save settings</button>
+    <button id="saveJpeg" class="primary" title="Bake everything, full size, into edited\Edited_&lt;name&gt;.jpg beside the original">Save edited copy</button>
   </div>
 </aside>
 <script type="module" src="./src/main.ts"></script>

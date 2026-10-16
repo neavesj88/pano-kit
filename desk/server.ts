@@ -21,9 +21,10 @@ import { fileURLToPath } from "node:url";
 import { withMetadata } from "../src/jpeg.ts";
 import { isPano, readJpegHeader, type JpegHeader } from "./header.ts";
 import {
-  editedPath, isEditedName, isHiddenDir, isInsideAny, isJpegName, isSidecarName, sidecarPath, workCopyPath, workRelative,
+  EDITED_DIR, editedPath, isEditedName, isHiddenDir, isInsideAny, isJpegName, isSidecarName, overlayDir, overlayFileName, sidecarPath, workCopyPath, workRelative,
 } from "./paths.ts";
 import { PhotoCraft, type PhotoCraftConfig } from "./photocraft.ts";
+import { detailsFromRecipe } from "./details.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(HERE, "dist");
@@ -139,6 +140,11 @@ async function statOrNull(p: string) {
   try { return await fsp.stat(p); } catch { return null; }
 }
 
+/** The details saved for an original (its .pano.json), as they go into its copy. */
+async function savedDetails(original: string) {
+  try { return detailsFromRecipe(JSON.parse(await fsp.readFile(sidecarPath(original), "utf8"))); } catch { return {}; }
+}
+
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".json": "application/json", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".svg": "image/svg+xml",
@@ -227,7 +233,7 @@ async function livePoll() {
   live.busy = true;
   try {
     const doc = await pc.activeDoc();
-    const copy = workCopyPath(live.original, cfg.work);
+    const copy = workCopyPath(live.original, cfg.work, cfg.roots);
     const file = docFile(doc?.path ?? null);
     const matched = !!doc && (samePath(file, copy) || samePath(file, live.original) || doc.name.toLowerCase() === path.basename(live.original).toLowerCase());
     setLive({ connected: true, doc: doc?.name ?? null, matched, message: matched ? "" : doc ? `PhotoCraft's front image is ${doc.name}` : "No image open in PhotoCraft" });
@@ -240,6 +246,8 @@ async function livePoll() {
     // Wait until the edits stop for a moment: a slider drag is dozens of revisions.
     if (doc.revision !== live.exportedRev && now - live.changedAt >= 700) {
       setLive({ exporting: true });
+      // PhotoCraft writes the file but may not make its folder.
+      await fsp.mkdir(path.dirname(editedPath(copy)), { recursive: true });
       await pc.exportActive(workRelative(editedPath(copy), cfg.work));
       live.exportedRev = doc.revision;
       setLive({ exporting: false, message: "" });
@@ -259,6 +267,8 @@ async function list(dir: string | null) {
   const full = await allowed(dir);
   const entries = await fsp.readdir(full, { withFileTypes: true });
   const names = new Set(entries.map(e => e.name.toLowerCase()));
+  // Saved copies live in the edited folder beside the originals: read it once, not once per photo.
+  const editedNames = new Set((await fsp.readdir(path.join(full, EDITED_DIR)).catch(() => [] as string[])).map(n => n.toLowerCase()));
   const dirs = entries.filter(e => e.isDirectory() && !isHiddenDir(e.name)).map(e => ({ name: e.name, path: path.join(full, e.name) }));
   const photos = [];
   let hidden = 0;
@@ -271,12 +281,12 @@ async function list(dir: string | null) {
       hidden++;
       continue;
     }
-    const edited = names.has(path.basename(editedPath(file)).toLowerCase()) ? await statOrNull(editedPath(file)) : null;
-    const work = cfg.work && !isInsideAny([cfg.work], file) ? await statOrNull(editedPath(workCopyPath(file, cfg.work))) : null;
+    const edited = editedNames.has(path.basename(editedPath(file)).toLowerCase()) ? await statOrNull(editedPath(file)) : null;
+    const work = cfg.work && !isInsideAny([cfg.work], file) ? await statOrNull(editedPath(workCopyPath(file, cfg.work, cfg.roots))) : null;
     photos.push({
       name: e.name, path: file, size: st.size, mtime: st.mtimeMs, width: h.width, height: h.height,
       edited: edited ? { path: editedPath(file), mtime: edited.mtimeMs } : null,
-      work: work && cfg.work ? { path: editedPath(workCopyPath(file, cfg.work)), mtime: work.mtimeMs } : null,
+      work: work && cfg.work ? { path: editedPath(workCopyPath(file, cfg.work, cfg.roots)), mtime: work.mtimeMs } : null,
       sidecar: names.has(path.basename(sidecarPath(file)).toLowerCase()),
     });
   }
@@ -334,6 +344,8 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
     return send(res, 200, JSON.parse(await fsp.readFile(side, "utf8")));
   }
 
+  // The page's baked JPEG (or, with lossless=1, the original's own pixels) with the
+  // original's metadata and the details from its .pano.json written in.
   if (p === "/api/save" && req.method === "POST") {
     const original = await originalPath(q("path"));
     const target = editedPath(original);
@@ -341,7 +353,9 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
     if ((await statOrNull(target)) && q("overwrite") !== "1") return send(res, 409, { exists: true, path: target });
     const body = await readBody(req, 400 * 1024 * 1024);
     const before = await fsp.stat(original);
-    const out = withMetadata(body, await fsp.readFile(original));
+    const orig = await fsp.readFile(original);
+    const out = withMetadata(q("lossless") === "1" ? orig : body, orig, await savedDetails(original));
+    await fsp.mkdir(path.dirname(target), { recursive: true });
     await writeAtomic(target, out);
     const after = await fsp.stat(original);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new HttpError(500, "The original changed while saving; check it");
@@ -349,10 +363,42 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
     return send(res, 200, { path: target, bytes: out.length });
   }
 
+  // A flat photo for then-and-now, kept in <name>.overlays\ beside the original so the
+  // recipe can name it. The same name with different bytes gets a -2, -3... suffix.
+  if (p === "/api/overlay" && req.method === "PUT") {
+    const original = await originalPath(q("path"));
+    const name = overlayFileName(q("name") ?? "");
+    if (!name) throw new HttpError(400, "Only JPEG, PNG or WebP photos can be overlaid");
+    const body = await readBody(req, 80 * 1024 * 1024);
+    const dir = overlayDir(original);
+    await fsp.mkdir(dir, { recursive: true });
+    const ext = path.extname(name), base = name.slice(0, -ext.length);
+    for (let n = 1; n < 1000; n++) {
+      const file = path.join(dir, n === 1 ? name : `${base}-${n}${ext}`);
+      const st = await statOrNull(file);
+      if (st && (st.size !== body.length || !body.equals(await fsp.readFile(file)))) continue;
+      if (!st) await writeAtomic(file, body);
+      return send(res, 200, { file: path.basename(file), path: file });
+    }
+    throw new HttpError(409, "Too many photos with that name");
+  }
+
+  // New details into an existing saved copy, its pixels untouched.
+  if (p === "/api/details" && req.method === "POST") {
+    const original = await originalPath(q("path"));
+    const target = editedPath(original);
+    const edited = await statOrNull(target);
+    if (!edited) return send(res, 200, { written: false });
+    const out = withMetadata(await fsp.readFile(target), await fsp.readFile(original), await savedDetails(original));
+    await writeAtomic(target, out);
+    broadcast("saved", { path: target });
+    return send(res, 200, { written: true, path: target });
+  }
+
   if (p === "/api/photocraft/open" && req.method === "POST") {
     if (!pc || !cfg.work) throw new HttpError(400, "PhotoCraft is not set up in config.local.json");
     const original = await originalPath(q("path"));
-    const copy = workCopyPath(original, cfg.work);
+    const copy = workCopyPath(original, cfg.work, cfg.roots);
     if (!(await statOrNull(copy))) {
       await fsp.mkdir(path.dirname(copy), { recursive: true });
       await fsp.copyFile(original, copy, fs.constants.COPYFILE_EXCL);

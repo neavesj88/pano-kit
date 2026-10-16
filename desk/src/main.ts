@@ -1,16 +1,20 @@
 /* pano-desk's page: browse trip folders, look at a 360, grade it, blur what
  * should not be seen, set how the gallery opens it, follow PhotoCraft live,
- * and save <name>_edited.jpg plus a <name>.pano.json recipe beside the original.
+ * and save edited\Edited_<name>.jpg plus a <name>.pano.json recipe beside the original.
  *
  * Everything that changes pixels is pano-kit's (grade, bake), the same code for
  * the preview and the saved file, so the preview is what gets saved. */
 import { PanoEngine, loadThree } from "../../src/engine";
 import {
-  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, NADIR_DEG_MAX, compareFolders, normaliseView, parseFolder, shortDate,
+  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, NADIR_DEG_MAX, compareFolders, mapsUrl, normaliseView, parseFolder, parseLocation, shortDate,
   type Blur, type Hotspot, type View,
 } from "../../src/core";
 import { DEFAULT_GRADE, GRADE_RANGES, isIdentityGrade, normaliseGrade, type Grade, type GradeKey } from "../../src/grade";
 import { bakeTo, canvasToJpeg } from "../../src/bake";
+import { LIMITS, cleanTags, isLinkUrl } from "../details";
+import {
+  DEFAULT_OVERLAY, HFOV_MAX, HFOV_MIN, direction, normaliseOverlay, overlayCamera, photoPoint, placePoint, type Overlay,
+} from "../../src/overlay";
 
 const THREE_URL = "/vendor/three/0.186.1/three.module.min.js";
 /** As neaves.au's curate panel allows: a face across a square is well under a degree. */
@@ -28,7 +32,19 @@ type Base = "original" | "photocraft";
 type Source = Base | "edited";
 interface Nadir { cover: "none" | "disk"; deg: number; rot: number }
 /** What is saved beside the original as <name>.pano.json. */
-interface Recipe { version: 1; base: Base; grade: Grade; blurs: Blur[]; start: View; hotspots: Hotspot[]; nadir: Nadir; savedAt?: string }
+/** Where a photo was taken. `approx` marks a guess (a site's centre, the phone's
+ *  coarse fix) still to be checked; setting the spot by hand clears it. */
+interface Spot { lat: number; lng: number; approx: boolean; source?: string }
+interface Recipe {
+  version: 1; base: Base; grade: Grade; blurs: Blur[]; start: View; hotspots: Hotspot[]; nadir: Nadir;
+  title: string; place: string; location: Spot | null; description: string; tags: string[];
+  /** 0 for none, else 1 to 5 stars. */
+  rating: number; linkUrl: string; linkLabel: string;
+  /** Flat photos set into the 360, bottom first; `file` is in <name>.overlays beside the original. */
+  overlays: PlacedPhoto[];
+  savedAt?: string;
+}
+interface PlacedPhoto extends Overlay { file: string }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -62,9 +78,16 @@ let beforeHeld = false;
 let copied: Grade | null = null;
 let pcState: Record<string, any> = { on: false };
 let config: { roots: string[]; work: string | null; photocraft: boolean } = { roots: [], work: null, photocraft: false };
+/** The overlaid photos' pictures, by file path: loaded once, handed to the engine and the bake. */
+const overlayImages = new Map<string, HTMLImageElement>();
+let selOverlay = -1;
+let overlayDrag: { i: number; px: number; py: number } | null = null;
 
 function freshRecipe(): Recipe {
-  return { version: 1, base: "original", grade: { ...DEFAULT_GRADE }, blurs: [], start: { ...DEFAULT_VIEW }, hotspots: [], nadir: { cover: "none", deg: 25, rot: 0 } };
+  return {
+    version: 1, base: "original", grade: { ...DEFAULT_GRADE }, blurs: [], start: { ...DEFAULT_VIEW }, hotspots: [], nadir: { cover: "none", deg: 25, rot: 0 },
+    title: "", place: "", location: null, description: "", tags: [], rating: 0, linkUrl: "", linkLabel: "", overlays: [],
+  };
 }
 
 function readRecipe(raw: any): Recipe {
@@ -77,8 +100,28 @@ function readRecipe(raw: any): Recipe {
   r.hotspots = Array.isArray(raw.hotspots) ? raw.hotspots.filter((h: any) => Number.isFinite(h?.yaw) && typeof h?.text === "string") : [];
   const n = raw.nadir ?? {};
   r.nadir = { cover: n.cover === "disk" ? "disk" : "none", deg: Number(n.deg) || 25, rot: Number(n.rot) || 0 };
+  const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : "");
+  r.title = str(raw.title, LIMITS.title);
+  r.place = str(raw.place, LIMITS.place);
+  r.location = readSpot(raw.location);
+  r.description = str(raw.description, LIMITS.description);
+  r.tags = Array.isArray(raw.tags) ? cleanTags(raw.tags) : [];
+  r.rating = Number.isInteger(raw.rating) && raw.rating >= 0 && raw.rating <= 5 ? raw.rating : 0;
+  r.linkUrl = str(raw.linkUrl, LIMITS.linkUrl);
+  r.linkLabel = str(raw.linkLabel, LIMITS.linkLabel);
+  r.overlays = Array.isArray(raw.overlays)
+    ? raw.overlays.filter((o: any) => typeof o?.file === "string" && o.file).map((o: any) => ({ ...normaliseOverlay(o), file: o.file }))
+    : [];
   r.savedAt = typeof raw.savedAt === "string" ? raw.savedAt : undefined;
   return r;
+}
+
+function readSpot(l: any): Spot | null {
+  const lat = Number(l?.lat), lng = Number(l?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  const s: Spot = { lat, lng, approx: l.approx === true };
+  if (typeof l.source === "string" && l.source) s.source = l.source.slice(0, 200);
+  return s;
 }
 
 const dirty = () => JSON.stringify({ ...recipe, savedAt: undefined }) !== savedJson;
@@ -167,6 +210,7 @@ async function openPhoto(p: Photo) {
   markSaved();
   source = recipe.base === "photocraft" && p.work ? "photocraft" : "original";
   selBlur = -1;
+  selOverlay = -1;
   setMode("look");
   $("empty").hidden = true;
   $("title").textContent = p.name;
@@ -197,11 +241,181 @@ async function show(keepView: boolean) {
   drawSources();
 }
 
-/** The sliders and blurs, live, unless looking at the saved file or holding Before. */
+/** The sliders, blurs and overlaid photos, live, unless looking at the saved file or holding Before. */
 function applyPreview() {
   const off = source === "edited" || beforeHeld;
   engine.setGradePreview(off ? null : recipe.grade);
   engine.setBlurPreview(off || !recipe.blurs.length ? null : recipe.blurs);
+  void showOverlays();
+}
+
+/* -------------------------------------------------- overlaid photos */
+
+/** Where an overlaid photo's file is: <name>.overlays\<file> beside the original. */
+function overlayPath(file: string): string {
+  const p = current!.path, sep = p.includes("\\") ? "\\" : "/";
+  return p.replace(/\.[^.\\/]+$/, "") + ".overlays" + sep + file;
+}
+
+function overlayImage(file: string): Promise<HTMLImageElement> {
+  const key = overlayPath(file);
+  const have = overlayImages.get(key);
+  if (have?.complete && have.naturalWidth) return Promise.resolve(have);
+  const img = have ?? new Image();
+  overlayImages.set(key, img);
+  // The load event, not decode(): a window that is not being drawn can hold decode() back indefinitely.
+  const ready = new Promise<HTMLImageElement>((resolve, reject) => {
+    img.addEventListener("load", () => resolve(img), { once: true });
+    img.addEventListener("error", () => { overlayImages.delete(key); reject(new Error(`Could not load ${file}`)); }, { once: true });
+  });
+  if (!have) img.src = fileUrl(key, 0);
+  return ready;
+}
+
+/** The overlaid photos as the engine and the bake take them, pictures loaded. */
+async function overlaySources() {
+  const out = [];
+  for (const o of recipe.overlays) {
+    try { out.push({ image: await overlayImage(o.file), overlay: o as Overlay }); }
+    catch { toast(`Could not load ${o.file}`, "err"); }
+  }
+  return out;
+}
+
+async function showOverlays() {
+  const off = source === "edited" || beforeHeld || !current;
+  engine.setOverlays(off ? null : await overlaySources());
+}
+
+/** The topmost overlaid photo under a screen point, with the photo pixel it is grabbed by. */
+function overlayAt(clientX: number, clientY: number): { i: number; px: number; py: number } | null {
+  const { yaw, pitch } = engine.dirAt(clientX, clientY);
+  for (let i = recipe.overlays.length - 1; i >= 0; i--) {
+    const img = current && overlayImages.get(overlayPath(recipe.overlays[i].file));
+    if (!img?.naturalWidth) continue;
+    const at = photoPoint(overlayCamera(recipe.overlays[i], img.naturalWidth, img.naturalHeight), direction(yaw, pitch));
+    if (at) return { i, px: at[0], py: at[1] };
+  }
+  return null;
+}
+
+/** Then & now tab open, and not looking at a saved file: dragging an overlaid photo moves it rather than the view. */
+const overlayMode = () => !$("tab-overlay").hidden && source !== "edited" && !!current;
+
+function bindOverlayDrag() {
+  const stage = $("stage");
+  // Capture on the stage runs before the engine's own handlers on the canvas, so a grab
+  // on a photo never turns the view, and a press anywhere else still does.
+  stage.addEventListener("pointerdown", e => {
+    if (!overlayMode() || e.button !== 0 || (e.target as HTMLElement).closest("#top, #mm, .pano-pin")) return;
+    const hit = overlayAt(e.clientX, e.clientY);
+    if (!hit) return;
+    e.stopPropagation();
+    e.preventDefault();
+    overlayDrag = hit;
+    if (selOverlay !== hit.i) { selOverlay = hit.i; drawOverlayTab(); }
+    stage.setPointerCapture(e.pointerId);
+  }, true);
+  stage.addEventListener("pointermove", e => {
+    if (!overlayDrag) {
+      if (overlayMode()) $("c").style.cursor = overlayAt(e.clientX, e.clientY) ? "move" : "grab";
+      return;
+    }
+    e.stopPropagation();
+    const o = recipe.overlays[overlayDrag.i];
+    const img = overlayImages.get(overlayPath(o.file))!;
+    const at = engine.dirAt(e.clientX, e.clientY);
+    Object.assign(o, placePoint(o, img.naturalWidth, img.naturalHeight, overlayDrag.px, overlayDrag.py, at.yaw, at.pitch));
+    void showOverlays();
+    syncOverlaySliders();
+  }, true);
+  const end = (e: PointerEvent) => {
+    if (!overlayDrag) return;
+    e.stopPropagation();
+    overlayDrag = null;
+    updateDirty();
+    drawOverlayTab();
+  };
+  stage.addEventListener("pointerup", end, true);
+  stage.addEventListener("pointercancel", end, true);
+  // Wheel over a photo sizes it (Shift: turns it); anywhere else the view zooms as usual.
+  stage.addEventListener("wheel", e => {
+    if (!overlayMode()) return;
+    const hit = overlayAt(e.clientX, e.clientY);
+    if (!hit) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const o = recipe.overlays[hit.i];
+    if (e.shiftKey) o.roll = Math.max(-180, Math.min(180, o.roll + Math.sign(e.deltaY || e.deltaX) * 0.5));
+    else o.hfov = Math.max(HFOV_MIN, Math.min(HFOV_MAX, o.hfov * (1 + e.deltaY * 0.0008)));
+    selOverlay = hit.i;
+    void showOverlays();
+    syncOverlaySliders();
+    updateDirty();
+  }, { capture: true, passive: false });
+}
+
+async function addOverlay(file: File) {
+  if (!current) return;
+  try {
+    const { data } = await api(`/api/overlay?path=${encodeURIComponent(current.path)}&name=${encodeURIComponent(file.name)}`, { method: "PUT", body: file });
+    const v = engine.currentView();
+    // Where you are looking, about half the width of the view, so it is in front of you to drag into place.
+    recipe.overlays.push({ ...DEFAULT_OVERLAY, yaw: round(v.yaw, 2), pitch: round(v.pitch, 2), hfov: round(Math.min(90, v.fov * 0.6), 1), file: data.file });
+    selOverlay = recipe.overlays.length - 1;
+    await showOverlays();
+    updateDirty();
+    drawOverlayTab();
+  } catch (e: any) { toast(`Not added: ${e.message}`, "err"); }
+}
+
+const OVERLAY_SLIDERS: [keyof Overlay, string, number, number, number][] = [
+  ["hfov", "Size", HFOV_MIN, HFOV_MAX, 0.1],
+  ["roll", "Turn", -180, 180, 0.1],
+  ["opacity", "Opacity", 0, 1, 0.01],
+  ["feather", "Soft edge", 0, 0.3, 0.005],
+  ["yaw", "Across", -180, 180, 0.05],
+  ["pitch", "Up", -89, 89, 0.05],
+];
+
+function drawOverlayTab() {
+  const off = !current || source === "edited";
+  const sel = recipe.overlays[selOverlay];
+  $("tab-overlay").innerHTML = `
+    <p class="note">Set an old photo into this 360 where it was taken. With this tab open, drag a photo to move it, scroll on it to size it, Shift+scroll to turn it. Line up something both share (a corner, a statue, a roofline), then fade it with Opacity.</p>
+    <div class="buttons"><label class="filebtn ${off ? "disabled" : ""}">Add photo…<input type="file" id="oAdd" accept="image/jpeg,image/png,image/webp" hidden ${off ? "disabled" : ""}></label></div>
+    <div class="list">${recipe.overlays.map((o, i) => `<div class="item${i === selOverlay ? " on" : ""}" data-i="${i}">
+      <span>${esc(o.file)} · ${round(o.hfov)}° wide${o.opacity < 1 ? ` · ${Math.round(o.opacity * 100)}%` : ""}</span><button data-go="${i}" title="Look at it">◎</button><button data-del="${i}" title="Remove from this photo">×</button></div>`).join("") || `<p class="note">No photos set in yet.</p>`}</div>
+    ${sel ? OVERLAY_SLIDERS.map(([k, label, lo, hi, st]) => slider(`o-${k}`, label, round(sel[k] as number, 3), lo, hi, st)).join("") : ""}
+    ${sel ? `<p class="note">PNG cut-outs keep their transparency. The photo keeps its own colours: the Adjust sliders change only the 360.</p>` : ""}`;
+  const add = document.getElementById("oAdd") as HTMLInputElement | null;
+  if (add) add.onchange = () => { const f = add.files?.[0]; add.value = ""; if (f) void addOverlay(f); };
+  bindList("tab-overlay", i => { selOverlay = selOverlay === i ? -1 : i; drawOverlayTab(); },
+    i => { const o = recipe.overlays[i]; engine.flyTo({ yaw: o.yaw, pitch: o.pitch, fov: Math.min(100, Math.max(30, o.hfov * 1.4)) }, 700); },
+    i => { recipe.overlays.splice(i, 1); selOverlay = -1; void showOverlays(); updateDirty(); drawOverlayTab(); });
+  if (!sel) return;
+  for (const [k] of OVERLAY_SLIDERS) {
+    const r = $<HTMLInputElement>(`o-${k}`), n = $<HTMLInputElement>(`o-${k}-n`);
+    const set = (v: number) => {
+      Object.assign(sel, normaliseOverlay({ ...sel, [k]: v }));
+      syncOverlaySliders();
+      void showOverlays();
+      updateDirty();
+    };
+    r.oninput = () => set(Number(r.value));
+    n.onchange = () => set(Number(n.value));
+    r.disabled = n.disabled = off;
+  }
+}
+
+/** Slider positions after a drag or a scroll, without redrawing the tab under the pointer. */
+function syncOverlaySliders() {
+  const sel = recipe.overlays[selOverlay];
+  if (!sel) return;
+  for (const [k] of OVERLAY_SLIDERS) {
+    const r = document.getElementById(`o-${k}`) as HTMLInputElement | null, n = document.getElementById(`o-${k}-n`) as HTMLInputElement | null;
+    if (r && n) r.value = n.value = String(round(sel[k] as number, 3));
+  }
 }
 
 function applyNadir() {
@@ -250,7 +464,7 @@ function onTap(at: { yaw: number; pitch: number } | { u: number; v: number }) {
   } else if (mode === "label") {
     const text = $<HTMLInputElement>("labelText")?.value.trim();
     if (!text) return toast("Type the label's text first", "err");
-    recipe.hotspots.push({ yaw: round(at.yaw, 2), pitch: round(at.pitch, 2), text: text.slice(0, 120) });
+    recipe.hotspots.push({ yaw: round(at.yaw, 2), pitch: round(at.pitch, 2), text: text.slice(0, LIMITS.hotspotText) });
     engine.setHotspots(recipe.hotspots);
     edited();
     drawPanels();
@@ -286,7 +500,7 @@ function drawPanels() {
   const off = !current || source === "edited";
   const g = recipe.grade;
   $("tab-adjust").innerHTML = `
-    ${off && current ? `<p class="note">Showing the saved _edited.jpg as it is. Pick Original or PhotoCraft above to edit.</p>` : ""}
+    ${off && current ? `<p class="note">Showing the saved edited copy as it is. Pick Original or PhotoCraft above to edit.</p>` : ""}
     ${GROUPS.map(([title, keys]) => `<h3>${title}</h3>${keys.map(k => slider(`g-${k}`, LABELS[k], g[k], GRADE_RANGES[k][0], GRADE_RANGES[k][1], k === "exposure" ? 0.05 : 1)).join("")}`).join("")}
     <div class="buttons"><button id="gReset">Reset all</button><button id="gCopy">Copy</button><button id="gPaste" ${copied ? "" : "disabled"}>Paste</button></div>
     <p class="note">Each slider changes every pixel on its own, so nothing here can draw a line where the 360 wraps. Double-click a name to reset it.</p>`;
@@ -356,6 +570,8 @@ function drawPanels() {
   $("nDeg-n").onchange = () => { $<HTMLInputElement>("nDeg").value = $<HTMLInputElement>("nDeg-n").value; nadirChanged(); };
   $("nRot-n").onchange = () => { $<HTMLInputElement>("nRot").value = $<HTMLInputElement>("nRot-n").value; nadirChanged(); };
 
+  drawInfo();
+  drawOverlayTab();
   drawPhotoCraft();
   for (const b of document.querySelectorAll<HTMLButtonElement>("[data-mode]")) b.onclick = () => setMode(b.dataset.mode as typeof mode);
   $<HTMLButtonElement>("saveJpeg").disabled = !current || source === "edited";
@@ -392,7 +608,7 @@ function drawPhotoCraft() {
     <h3>Round trip</h3>
     <p class="note">1. <b>Open in PhotoCraft</b> copies the original into the working folder${config.work ? ` (${esc(config.work)})` : ""} and opens it there. The original is never opened for writing.</p>
     <p class="note">2. Turn on <b>Live</b>: whenever you pause editing in PhotoCraft, its picture is exported (flattened; your layers stay in PhotoCraft) and shown here in 360.</p>
-    <p class="note">3. Sliders and blurs here go on top of it. <b>Save _edited.jpg</b> writes the result beside the original.</p>
+    <p class="note">3. Sliders and blurs here go on top of it. <b>Save edited copy</b> writes the result to the edited folder beside the original.</p>
     <div class="buttons"><button id="pcOpen" ${current && config.photocraft ? "" : "disabled"}>Open in PhotoCraft</button>
       <button id="pcLive" class="${s.on ? "on" : ""}" ${current && config.photocraft ? "" : "disabled"}>Live ${s.on ? "on" : "off"}</button></div>
     ${status}
@@ -415,12 +631,66 @@ async function setLive(on: boolean) {
 
 /* ------------------------------------------------------------ saving */
 
+/** Place, location, description and tags: what the gallery shows beside the photo. */
+function drawInfo() {
+  const off = !current, l = recipe.location;
+  $("tab-info").innerHTML = `
+    <h3>Name</h3>
+    <input type="text" id="iTitle" class="wide" maxlength="${LIMITS.title}" placeholder="What the gallery calls it" value="${esc(recipe.title)}" ${off ? "disabled" : ""}>
+    <h3>Place</h3>
+    <input type="text" id="iPlace" class="wide" maxlength="${LIMITS.place}" placeholder="e.g. Tyne Cot Cemetery, Zonnebeke" value="${esc(recipe.place)}" ${off ? "disabled" : ""}>
+    <h3>Location</h3>
+    <div class="row" style="grid-template-columns:1fr auto"><input type="text" id="iLoc" placeholder="lat, lng or a Google Maps link" value="${l ? `${l.lat}, ${l.lng}` : ""}" ${off ? "disabled" : ""}>
+      <button id="iMap" ${l ? "" : "disabled"} title="Open in Google Maps">Map</button></div>
+    ${l?.approx ? `<p class="note warn">Approximate${l.source ? `: ${esc(l.source)}` : ""}. Paste the true spot, or <button id="iExact" class="link">it's right</button>.</p>` : l?.source ? `<p class="note">${esc(l.source)}</p>` : ""}
+    <h3>Description</h3>
+    <textarea id="iDesc" rows="10" maxlength="${LIMITS.description}" placeholder="What is in the photo" ${off ? "disabled" : ""}>${esc(recipe.description)}</textarea>
+    <h3>Tags</h3>
+    <input type="text" id="iTags" class="wide" placeholder="comma separated, up to ${LIMITS.tags}" value="${esc(recipe.tags.join(", "))}" ${off ? "disabled" : ""}>
+    <h3>Rating</h3>
+    <div class="stars" role="radiogroup" aria-label="Rating">${[1, 2, 3, 4, 5].map(n => `<button data-star="${n}" class="${n <= recipe.rating ? "on" : ""}" title="${n} star${n > 1 ? "s" : ""}" ${off ? "disabled" : ""}>★</button>`).join("")}
+      <button data-star="0" class="ghost" title="No rating" ${off ? "disabled" : ""}>clear</button></div>
+    <h3>Read more link</h3>
+    <input type="text" id="iLinkUrl" class="wide" maxlength="${LIMITS.linkUrl}" placeholder="https://… (a museum's page, say)" value="${esc(recipe.linkUrl)}" ${off ? "disabled" : ""}>
+    <input type="text" id="iLinkLabel" class="wide" maxlength="${LIMITS.linkLabel}" placeholder="Link text (optional)" value="${esc(recipe.linkLabel)}" ${off ? "disabled" : ""} style="margin-top:6px">
+    <p class="note">Save settings writes these to the .pano.json and, once there is one, into the edited copy itself (title, description, keywords, rating, place, GPS, and the start view, labels and link), which is what neaves.au reads on upload.</p>`;
+  if (off) return;
+  $<HTMLInputElement>("iTitle").oninput = e => { recipe.title = (e.target as HTMLInputElement).value.trim(); updateDirty(); };
+  for (const b of $("tab-info").querySelectorAll<HTMLButtonElement>("[data-star]")) b.onclick = () => { recipe.rating = Number(b.dataset.star); updateDirty(); drawInfo(); };
+  $<HTMLInputElement>("iLinkUrl").onchange = e => {
+    const v = (e.target as HTMLInputElement).value.trim();
+    if (v && !isLinkUrl(v)) return toast("A link must start with http:// or https://", "err");
+    recipe.linkUrl = v;
+    updateDirty();
+  };
+  $<HTMLInputElement>("iLinkLabel").oninput = e => { recipe.linkLabel = (e.target as HTMLInputElement).value.trim(); updateDirty(); };
+  $<HTMLInputElement>("iPlace").oninput = e => { recipe.place = (e.target as HTMLInputElement).value.trim(); updateDirty(); };
+  $<HTMLTextAreaElement>("iDesc").oninput = e => { recipe.description = (e.target as HTMLTextAreaElement).value.trim(); updateDirty(); };
+  $<HTMLInputElement>("iTags").onchange = e => { recipe.tags = cleanTags((e.target as HTMLInputElement).value.split(",")); updateDirty(); drawInfo(); };
+  $<HTMLInputElement>("iLoc").onchange = e => {
+    const text = (e.target as HTMLInputElement).value;
+    if (!text.trim()) { recipe.location = null; updateDirty(); return drawInfo(); }
+    const at = parseLocation(text);
+    if (!at) return toast("Not a location: paste \"lat, lng\" or a Google Maps link", "err");
+    if ("short" in at) return toast("A short maps.app.goo.gl link cannot be read here: open it, then copy the long link or the coordinates", "err");
+    recipe.location = { lat: round(at.lat, 6), lng: round(at.lng, 6), approx: false, source: "set by hand" };
+    updateDirty();
+    drawInfo();
+  };
+  const ex = document.getElementById("iExact");
+  if (ex && l) ex.onclick = () => { recipe.location = { ...l, approx: false }; updateDirty(); drawInfo(); };
+  $("iMap").onclick = () => { if (recipe.location) window.open(mapsUrl(recipe.location.lat, recipe.location.lng), "_blank", "noopener"); };
+}
+
 async function saveSettings(quiet = false) {
   if (!current) return;
   const body = JSON.stringify({ ...recipe, savedAt: new Date().toISOString() });
   await api(`/api/sidecar?path=${encodeURIComponent(current.path)}`, { method: "PUT", body, headers: { "Content-Type": "application/json" } });
   markSaved();
-  if (!quiet) toast("Settings saved beside the original", "ok");
+  if (quiet) return;
+  // An edited copy already made carries the details too, so an upload picks up the latest.
+  const { data } = await api(`/api/details?path=${encodeURIComponent(current.path)}`, { method: "POST" });
+  toast(data?.written ? "Settings saved, and written into the edited copy" : "Settings saved beside the original", "ok");
 }
 
 async function saveJpeg() {
@@ -428,30 +698,35 @@ async function saveJpeg() {
   const p = current;
   const baseFile = source === "photocraft" ? p.work?.path : p.path;
   if (!baseFile) return;
-  if (source === "original" && isIdentityGrade(recipe.grade) && !recipe.blurs.length && !confirm("No sliders or blurs are set, so this would save the original again. Save anyway?")) return;
+  // No pixel edits: the copy is the original's own pixels with the details written in, nothing re-encoded.
+  const lossless = source === "original" && isIdentityGrade(recipe.grade) && !recipe.blurs.length && !recipe.overlays.length;
   const btn = $<HTMLButtonElement>("saveJpeg");
   btn.disabled = true;
   btn.textContent = "Saving…";
   try {
-    const blob = await (await fetch(fileUrl(baseFile, source === "photocraft" ? p.work!.mtime : p.mtime))).blob();
-    const bmp = await createImageBitmap(blob);
-    const canvas = bakeTo(bmp, bmp.width, bmp.height, recipe.blurs, recipe.grade);
-    bmp.close();
-    const jpeg = await canvasToJpeg(canvas, JPEG_QUALITY);
-    canvas.width = canvas.height = 0;
-    const url = `/api/save?path=${encodeURIComponent(p.path)}`;
+    // The server writes the details from the .pano.json, so that goes first.
+    await saveSettings(true);
+    let jpeg: Blob = new Blob([]);
+    if (!lossless) {
+      const blob = await (await fetch(fileUrl(baseFile, source === "photocraft" ? p.work!.mtime : p.mtime))).blob();
+      const bmp = await createImageBitmap(blob);
+      const canvas = bakeTo(bmp, bmp.width, bmp.height, recipe.blurs, recipe.grade, await overlaySources());
+      bmp.close();
+      jpeg = await canvasToJpeg(canvas, JPEG_QUALITY);
+      canvas.width = canvas.height = 0;
+    }
+    const url = `/api/save?path=${encodeURIComponent(p.path)}${lossless ? "&lossless=1" : ""}`;
     let r = await api(url, { method: "POST", body: jpeg });
     if (r.status === 409) {
       if (!confirm(`${r.data.path} already exists. Replace it?`)) return;
       r = await api(url + "&overwrite=1", { method: "POST", body: jpeg });
     }
-    await saveSettings(true);
-    toast(`Saved ${r.data.path}`, "ok");
+    toast(`Saved ${r.data.path}${lossless ? " (original pixels, details added)" : ""}`, "ok");
   } catch (e: any) {
     toast(`Not saved: ${e.message}`, "err");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Save _edited.jpg";
+    btn.textContent = "Save edited copy";
   }
 }
 
@@ -504,7 +779,7 @@ async function main() {
   );
   // For poking at from the console.
   (window as any).engine = engine;
-  (window as any).desk = { get recipe() { return recipe; }, get source() { return source; }, get current() { return current; }, openPhoto, setSource, saveJpeg, saveSettings, edited, drawPanels };
+  (window as any).desk = { get recipe() { return recipe; }, get source() { return source; }, get current() { return current; }, openPhoto, setSource, saveJpeg, saveSettings, edited, drawPanels, addOverlay, showOverlays };
   config = (await api("/api/config")).data;
   const savedSize = Number(store.get("blurSize"));
   if (savedSize >= BLUR_MIN && savedSize <= BLUR_MAX) blurSize = savedSize;
@@ -534,6 +809,7 @@ async function main() {
   window.addEventListener("keyup", e => { if (e.key === "\\") hold(false); });
   window.addEventListener("beforeunload", e => { if (current && dirty()) e.preventDefault(); });
   listen();
+  bindOverlayDrag();
   drawPanels();
   drawSources();
   const last = store.get("folder");
