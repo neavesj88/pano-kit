@@ -4,6 +4,8 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+/* The page hides things with the hidden attribute; an element's own display rule would otherwise win over it. */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, "Segoe UI", sans-serif; overflow: hidden; }
 body { display: grid; grid-template-columns: 300px 1fr 330px; }
 button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; font: inherit; cursor: pointer; }
