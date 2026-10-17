@@ -62,7 +62,7 @@ input[type=number] { width: 62px; text-align: right; }
 #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
 
 .tabs { display: flex; gap: 4px; padding: 10px 10px 0; }
-.tabs button { flex: 1; padding: 6px 4px; }
+.tabs button { flex: 1 1 auto; padding: 6px 6px; white-space: nowrap; }
 .tab { flex: 1; overflow: auto; padding: 10px 12px; }
 .tab h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
 .tab h3:first-child { margin-top: 2px; }
@@ -80,7 +80,7 @@ input[type=number] { width: 62px; text-align: right; }
 .status.ok { border-color: #2f6b45; }
 .status.warn { border-color: #7a5d16; }
 #savebar { display: flex; gap: 6px; align-items: center; padding: 10px; border-top: 1px solid var(--line); }
-#dirty { flex: 1; color: var(--warn); }
+#dirty { flex: 1; min-width: 0; color: var(--warn); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Info tab */
 input.wide, textarea { width: 100%; }
@@ -93,4 +93,5 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); tex
 label.filebtn { display: inline-block; background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; }
 label.filebtn:hover { border-color: #55555f; }
 label.filebtn.disabled { opacity: .45; cursor: default; pointer-events: none; }
-.tabs { flex-wrap: wrap; }
+.preset { display: flex; gap: 6px; align-items: center; }
+.preset select { flex: 1; min-width: 0; }

@@ -9,14 +9,16 @@ going through a trip's photos, fixing them, and deciding how each one opens.
 - **Adjust**: exposure, contrast, a tone curve (highlights, lights, darks, shadows),
   whites and blacks, temperature and tint, vibrance and saturation. Every
   slider is pano-kit `grade`, one pixel at a time, so the seam where the 360
-  wraps cannot show. Copy and paste a grade between photos.
+  wraps cannot show. Copy and paste a grade between photos, or keep up to three
+  named presets (pick one in the dropdown, then Load or Save); they are stored in
+  `presets.json` in the app's data folder (`%LOCALAPPDATA%\pano-desk`), not the browser.
 - **Blur**: click what to hide (a face, a plate, the hand on the stick). The blur
   is baked into the saved file with pano-kit `bake`, the same code a gallery
   publishes with.
 - **View**: the start view, labels, and a preview of the gallery's bottom cover.
 - **Info**: name, place, map location (coordinates or a Google Maps link), description,
   tags, rating and a read-more link: what a gallery shows beside the photo.
-- **Then & now**: set an old flat photo into the 360 where it was taken. With the
+- **Overlay** (then and now): set an old flat photo into the 360 where it was taken. With the
   tab open, drag the photo to move it (it stays in true perspective: it is drawn as
   the camera that took it would have seen it), scroll on it to size it, Shift+scroll
   to turn it; sliders for size, turn, opacity, soft edge and position. PNG cut-outs

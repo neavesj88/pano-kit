@@ -25,6 +25,7 @@ import {
 } from "./paths.ts";
 import { PhotoCraft, type PhotoCraftConfig } from "./photocraft.ts";
 import { detailsFromRecipe } from "./details.ts";
+import { readPresets } from "./presets.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(HERE, "dist");
@@ -327,6 +328,20 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
       return send(res, 200, { ok: true });
     }
     return sendFile(req, res, t, "no-cache");
+  }
+
+  // The three grade presets, in the app's own data folder (beside the thumbnail cache).
+  if (p === "/api/presets") {
+    const file = path.join(cfg.cache, "presets.json");
+    if (req.method === "PUT") {
+      const slots = readPresets(JSON.parse((await readBody(req, 64 * 1024)).toString("utf8")));
+      await fsp.mkdir(cfg.cache, { recursive: true });
+      await writeAtomic(file, JSON.stringify({ slots }, null, 2) + "\n");
+      return send(res, 200, { slots });
+    }
+    let raw: unknown = null;
+    try { raw = JSON.parse(await fsp.readFile(file, "utf8")); } catch { /* none saved yet */ }
+    return send(res, 200, { slots: readPresets(raw) });
   }
 
   if (p === "/api/sidecar") {

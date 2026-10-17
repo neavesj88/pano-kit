@@ -12,6 +12,7 @@ import {
 import { DEFAULT_GRADE, GRADE_RANGES, isIdentityGrade, normaliseGrade, type Grade, type GradeKey } from "../../src/grade";
 import { bakeTo, canvasToJpeg } from "../../src/bake";
 import { LIMITS, cleanTags, isLinkUrl } from "../details";
+import { PRESET_NAME_MAX, PRESET_SLOTS, readPresets, type Preset } from "../presets";
 import {
   DEFAULT_OVERLAY, HFOV_MAX, HFOV_MIN, direction, normaliseOverlay, overlayCamera, photoPoint, placePoint, type Overlay,
 } from "../../src/overlay";
@@ -76,6 +77,7 @@ let selBlur = -1;
 let blurSize = 3; // replaced from storage once the page has loaded
 let beforeHeld = false;
 let copied: Grade | null = null;
+let presets: (Preset | null)[] = Array.from({ length: PRESET_SLOTS }, () => null);
 let pcState: Record<string, any> = { on: false };
 let config: { roots: string[]; work: string | null; photocraft: boolean } = { roots: [], work: null, photocraft: false };
 /** The overlaid photos' pictures, by file path: loaded once, handed to the engine and the bake. */
@@ -126,7 +128,11 @@ function readSpot(l: any): Spot | null {
 
 const dirty = () => JSON.stringify({ ...recipe, savedAt: undefined }) !== savedJson;
 function markSaved() { savedJson = JSON.stringify({ ...recipe, savedAt: undefined }); updateDirty(); }
-function updateDirty() { $("dirty").textContent = current && dirty() ? "Unsaved changes" : ""; }
+function updateDirty() {
+  const d = !!current && dirty();
+  $("dirty").textContent = d ? "Unsaved" : "";
+  $("dirty").title = d ? "Unsaved changes: Save settings or Save edited copy keeps them" : "";
+}
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 function toast(msg: string, kind: "" | "ok" | "err" = "") {
@@ -382,6 +388,7 @@ function drawOverlayTab() {
   const off = !current || source === "edited";
   const sel = recipe.overlays[selOverlay];
   $("tab-overlay").innerHTML = `
+    <h3>Then &amp; now</h3>
     <p class="note">Set an old photo into this 360 where it was taken. With this tab open, drag a photo to move it, scroll on it to size it, Shift+scroll to turn it. Line up something both share (a corner, a statue, a roofline), then fade it with Opacity.</p>
     <div class="buttons"><label class="filebtn ${off ? "disabled" : ""}">Add photo…<input type="file" id="oAdd" accept="image/jpeg,image/png,image/webp" hidden ${off ? "disabled" : ""}></label></div>
     <div class="list">${recipe.overlays.map((o, i) => `<div class="item${i === selOverlay ? " on" : ""}" data-i="${i}">
@@ -496,11 +503,38 @@ function slider(id: string, label: string, value: number, min: number, max: numb
     <input type="number" id="${id}-n" min="${min}" max="${max}" step="${stepBy}" value="${value}"></div>`;
 }
 
+/** The preset slot last picked in the dropdown (0 to PRESET_SLOTS - 1). */
+function presetSlot(): number {
+  const n = Number(store.get("presetSlot"));
+  return Number.isInteger(n) && n >= 0 && n < PRESET_SLOTS ? n : 0;
+}
+
+async function savePreset(i: number) {
+  const name = prompt(`Name preset ${i + 1}`, presets[i]?.name ?? `Preset ${i + 1}`);
+  if (name === null) return;
+  const next = presets.slice();
+  next[i] = { name: name.trim().slice(0, PRESET_NAME_MAX) || `Preset ${i + 1}`, grade: { ...recipe.grade } };
+  try {
+    const { data } = await api("/api/presets", { method: "PUT", body: JSON.stringify(next), headers: { "Content-Type": "application/json" } });
+    presets = readPresets(data);
+    store.set("presetSlot", String(i));
+    drawPanels();
+    toast(`Saved preset "${presets[i]?.name}"`, "ok");
+  } catch (e: any) { toast(`Preset not saved: ${e.message}`, "err"); }
+}
+
 function drawPanels() {
   const off = !current || source === "edited";
   const g = recipe.grade;
+  const slot = presetSlot();
   $("tab-adjust").innerHTML = `
     ${off && current ? `<p class="note">Showing the saved edited copy as it is. Pick Original or PhotoCraft above to edit.</p>` : ""}
+    <h3>Presets</h3>
+    <div class="preset">
+      <select id="gPreset" aria-label="Preset">${presets.map((p, i) => `<option value="${i}" ${i === slot ? "selected" : ""}>${i + 1} · ${p ? esc(p.name) : "empty"}</option>`).join("")}</select>
+      <button id="gLoad" ${off || !presets[slot] ? "disabled" : ""} title="Set every slider to this preset">Load</button>
+      <button id="gSave" ${off ? "disabled" : ""} title="Keep the sliders as they are now in this slot">Save</button>
+    </div>
     ${GROUPS.map(([title, keys]) => `<h3>${title}</h3>${keys.map(k => slider(`g-${k}`, LABELS[k], g[k], GRADE_RANGES[k][0], GRADE_RANGES[k][1], k === "exposure" ? 0.05 : 1)).join("")}`).join("")}
     <div class="buttons"><button id="gReset">Reset all</button><button id="gCopy">Copy</button><button id="gPaste" ${copied ? "" : "disabled"}>Paste</button></div>
     <p class="note">Each slider changes every pixel on its own, so nothing here can draw a line where the 360 wraps. Double-click a name to reset it.</p>`;
@@ -519,6 +553,16 @@ function drawPanels() {
   $("gReset").onclick = () => { recipe.grade = { ...DEFAULT_GRADE }; edited(); drawPanels(); };
   $("gCopy").onclick = () => { copied = { ...recipe.grade }; toast("Grade copied: open another photo and Paste"); drawPanels(); };
   $("gPaste").onclick = () => { if (copied) { recipe.grade = { ...copied }; edited(); drawPanels(); } };
+  $<HTMLSelectElement>("gPreset").onchange = e => { store.set("presetSlot", (e.target as HTMLSelectElement).value); drawPanels(); };
+  $("gLoad").onclick = () => {
+    const p = presets[presetSlot()];
+    if (!p) return;
+    recipe.grade = { ...p.grade };
+    edited();
+    drawPanels();
+    toast(`Loaded preset "${p.name}"`, "ok");
+  };
+  $("gSave").onclick = () => void savePreset(presetSlot());
 
   $("tab-blur").innerHTML = `
     <div class="buttons"><button data-mode="blur" class="${mode === "blur" ? "on" : ""}" ${off ? "disabled" : ""}>Click to blur</button>
@@ -781,6 +825,7 @@ async function main() {
   (window as any).engine = engine;
   (window as any).desk = { get recipe() { return recipe; }, get source() { return source; }, get current() { return current; }, openPhoto, setSource, saveJpeg, saveSettings, edited, drawPanels, addOverlay, showOverlays };
   config = (await api("/api/config")).data;
+  try { presets = readPresets((await api("/api/presets")).data); } catch { /* empty slots until one is saved */ }
   const savedSize = Number(store.get("blurSize"));
   if (savedSize >= BLUR_MIN && savedSize <= BLUR_MAX) blurSize = savedSize;
   $("up").onclick = () => browse(listing.parent);

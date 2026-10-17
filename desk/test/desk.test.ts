@@ -2,6 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { isPano, readJpegHeader } from "../header.ts";
 import { cleanTags, detailsFromRecipe, isLinkUrl } from "../details.ts";
+import { PRESET_SLOTS, readPresets } from "../presets.ts";
 import { editedPath, isEditedName, isHiddenDir, isInside, overlayFileName, sidecarPath, workCopyPath, workRelative } from "../paths.ts";
 
 const win = process.platform === "win32";
@@ -109,6 +110,24 @@ describe("details", () => {
     expect(isLinkUrl("https://a.b/c")).toBe(true);
     expect(isLinkUrl("ftp://a")).toBe(false);
     expect(cleanTags(Array.from({ length: 30 }, (_, i) => "t" + i))).toHaveLength(20);
+  });
+});
+
+describe("presets", () => {
+  it("always has three slots, empty ones null, grades made whole and in range", () => {
+    expect(readPresets(null)).toEqual([null, null, null]);
+    const got = readPresets({ slots: [{ name: "  Warm lift ", grade: { exposure: 9, vibrance: 20 } }, null, { grade: {} }, { name: "fourth", grade: {} }] });
+    expect(got).toHaveLength(PRESET_SLOTS);
+    expect(got[0]?.name).toBe("Warm lift");
+    expect(got[0]?.grade.exposure).toBe(3);
+    expect(got[0]?.grade.vibrance).toBe(20);
+    expect(got[0]?.grade.contrast).toBe(0);
+    expect(got[1]).toBeNull();
+    expect(got[2]?.name).toBe("Preset 3");
+  });
+
+  it("ignores junk in a slot", () => {
+    expect(readPresets([{ name: "x" }, "y", 3])).toEqual([null, null, null]);
   });
 });
 
