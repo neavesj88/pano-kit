@@ -16,7 +16,7 @@
  */
 import type * as T from "three";
 import {
-  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, FOV_MAX, FOV_MIN, NADIR_DEG_MAX, capPolygon, clamp, firstPaintWidth, fitBadge, pickWidth, textureCap, wrap180,
+  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, FOV_MAX, FOV_MIN, NADIR_DEG_MAX, capPolygon, clamp, firstPaintWidth, fitBadge, pickWidth, textureCap, uploadStrips, wrap180,
   type Blur, type Hotspot, type ResolvedKind, type View, type ViewerSettings,
 } from "./core";
 import { bakeTo } from "./bake";
@@ -126,6 +126,7 @@ uniform sampler2D map;
 uniform vec4 crop;     // the photo's place in the full sphere: left, top, width, height (0..1)
 uniform float d;       // projection centre behind the sphere centre: 0 rectilinear, 1 stereographic
 uniform mat3 rot;      // camera to world
+uniform mat3 uvTransform; // the photo texture's own (turns over one stored top down)
 uniform float tanHalf; // tan(vertical fov / 2)
 uniform float aspect;
 uniform vec3 bg;
@@ -161,7 +162,7 @@ void main() {
   float u = 0.5 + atan(w.x, -w.z) / (2.0 * PI);
   float v = 0.5 + asin(clamp(w.y, -1.0, 1.0)) / PI;
   vec2 img = vec2((u - crop.x) / crop.z, ((1.0 - v) - crop.y) / crop.w);
-  vec2 uv = vec2(img.x, 1.0 - img.y);
+  vec2 uv = (uvTransform * vec3(img.x, 1.0 - img.y, 1.0)).xy;
   // Behind the viewer u jumps from 1 to 0; a derivative across that jump picks
   // the smallest mipmap and draws a line. Use the smaller of two gradients.
   vec2 dx = dFdx(uv), dy = dFdy(uv);
@@ -203,6 +204,38 @@ function loadImage(url: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error("The image could not be loaded"));
     img.src = url;
   });
+}
+
+/** What a photo can be drawn from: the first paint, a blur preview, the best rung. */
+type PhotoSource = HTMLImageElement | HTMLCanvasElement | ImageBitmap;
+
+/**
+ * Fetches and decodes the best rung off the main thread, as an ImageBitmap. An
+ * <img> decodes off it too, but uploading one copies and flips every pixel on
+ * the main thread in one go: a 250 ms frame for the 8000, nearly a second on a
+ * phone's CPU. A bitmap goes up in strips, a few ms a frame (uploadStrip).
+ */
+const DECODE_WORKER = `onmessage = async e => {
+  try {
+    const r = await fetch(e.data.url, { mode: "cors" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const bitmap = await createImageBitmap(await r.blob());
+    postMessage({ id: e.data.id, bitmap }, [bitmap]);
+  } catch (err) {
+    postMessage({ id: e.data.id, error: String((err && err.message) || err) });
+  }
+};`;
+
+const isBitmap = (src: unknown): src is ImageBitmap => typeof ImageBitmap !== "undefined" && src instanceof ImageBitmap;
+
+/** Right way up whatever the source. WebGL ignores UNPACK_FLIP_Y for an
+ *  ImageBitmap, so one is stored top down and turned over by the texture's
+ *  transform, which the photo's material and the planet shader both apply. */
+function orient(tex: T.Texture, src: unknown) {
+  const topDown = isBitmap(src);
+  tex.flipY = !topDown;
+  tex.repeat.set(1, topDown ? -1 : 1);
+  tex.offset.set(0, topDown ? 1 : 0);
 }
 
 /** Geometry parameters for a photo: where it sits on the sphere. */
@@ -264,7 +297,7 @@ function lookDir(THREE: Three, yaw: number, pitch: number) {
  */
 export function renderStartThumb(
   THREE: Three,
-  src: HTMLImageElement | HTMLCanvasElement,
+  src: PhotoSource,
   input: Pick<PanoInput, "gpano" | "srcW" | "srcH" | "resolvedKind">,
   start: View,
   w = 1200,
@@ -288,6 +321,7 @@ export function renderStartThumb(
     const tex = new THREE.Texture(src);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    orient(tex, src);
     tex.needsUpdate = true;
     const mesh = new THREE.Mesh(makeSphere(THREE, sphereParams(input), 2), new THREE.MeshBasicMaterial({ map: tex }));
     mesh.rotation.y = -Math.PI / 2;
@@ -325,7 +359,13 @@ export class PanoEngine {
   private figureImage: Picture | null = null;
   private input: PanoInput | null = null;
   /** What is on screen: the best image loaded so far. */
-  private shown: HTMLImageElement | HTMLCanvasElement | null = null;
+  private shown: PhotoSource | null = null;
+  /** What the texture on the photo was made from (a blur preview, or shown). */
+  private drawnFrom: PhotoSource | null = null;
+  /** The best rung going up a strip a frame, put on the photo once it is all there. */
+  private strips: { tex: T.DataTexture; src: T.Texture; rows: [number, number][]; next: number; done: (shown: boolean) => void } | null = null;
+  /** The decode worker; false once it has failed, and the <img> path is used. */
+  private decoder: { worker: Worker; url: string; next: number; waiting: Map<number, { resolve: (b: ImageBitmap) => void; reject: (e: Error) => void }> } | false | null = null;
   /** What blur previews are baked from: the untouched original, when the curator loads it. */
   private bakeSource: HTMLImageElement | null = null;
   private blurs: Blur[] | null = null;
@@ -460,7 +500,13 @@ export class PanoEngine {
     this.dropVrCaption();
     this.dropVrHint();
     this.vr.dotTex?.dispose();
+    this.dropStrips();
     this.texture?.dispose();
+    if (isBitmap(this.shown)) this.shown.close();
+    if (this.decoder) {
+      this.decoder.worker.terminate();
+      URL.revokeObjectURL(this.decoder.url);
+    }
     this.finishCrossfade();
     if (this.planet) {
       this.planet.mesh.geometry.dispose();
@@ -555,21 +601,110 @@ export class PanoEngine {
     for (const o of this.overlayMeshes) o.mesh.visible = !this.isFlat;
   }
 
-  private setTexture(src: HTMLImageElement | HTMLCanvasElement) {
-    this.invalidate();
+  private setTexture(src: PhotoSource, minimap = true) {
     const THREE = this.THREE;
-    const old = this.texture;
     const tex = new THREE.Texture(src);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = this.maxAniso;
+    orient(tex, src);
     tex.needsUpdate = true;
+    this.useTexture(tex, src);
+    if (minimap) this.drawMinimapBase(src);
+  }
+
+  /** Put a texture on the photo, in place of the one there and of any still going up. */
+  private useTexture(tex: T.Texture, from: PhotoSource) {
+    this.invalidate();
+    this.dropStrips();
+    const old = this.texture;
     this.texture = tex;
+    this.drawnFrom = from;
     if (this.mesh) {
       (this.mesh.material as T.MeshBasicMaterial).map = tex;
       (this.mesh.material as T.MeshBasicMaterial).needsUpdate = true;
     }
     old?.dispose();
-    this.drawMinimapBase(src);
+  }
+
+  /** The best rung as a texture filled a strip a frame (uploadStrip, from
+   *  frame()) and put on the photo once the last strip is up. Resolves true
+   *  then, or false if something else was put on the photo first. */
+  private setTextureInStrips(bitmap: ImageBitmap): Promise<boolean> {
+    this.dropStrips();
+    const THREE = this.THREE;
+    const tex = new THREE.DataTexture(null, bitmap.width, bitmap.height);
+    tex.source.dataReady = false; // storage only: the strips fill it
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.anisotropy = this.maxAniso;
+    tex.generateMipmaps = true; // so the storage has room for every mip level,
+    orient(tex, bitmap);
+    tex.needsUpdate = true;
+    this.renderer.initTexture(tex);
+    tex.generateMipmaps = false; // which are made once, after the last strip
+    return new Promise(done => {
+      this.strips = { tex, src: new THREE.Texture(bitmap), rows: uploadStrips(bitmap.width, bitmap.height), next: 0, done };
+    });
+  }
+
+  private uploadStrip() {
+    const s = this.strips!, THREE = this.THREE;
+    const [from, to] = s.rows[s.next++];
+    const last = s.next === s.rows.length;
+    s.tex.generateMipmaps = last;
+    // Never uploaded itself, s.src makes this a texSubImage2D of rows from..to of the bitmap.
+    this.renderer.copyTextureToTexture(s.src, s.tex, new THREE.Box2(new THREE.Vector2(0, from), new THREE.Vector2(s.tex.image.width, to)), new THREE.Vector2(0, from));
+    if (!last) return;
+    this.strips = null;
+    this.useTexture(s.tex, s.src.image as ImageBitmap);
+    s.done(true);
+  }
+
+  private dropStrips() {
+    const s = this.strips;
+    if (!s) return;
+    this.strips = null;
+    s.tex.dispose();
+    s.done(false);
+  }
+
+  /** The best rung, fetched and decoded by the decode worker. Rejects where a
+   *  worker or createImageBitmap is not to be had, and open() uses an <img>. */
+  private decodeBitmap(url: string): Promise<ImageBitmap> {
+    if (this.decoder === null) {
+      this.decoder = false;
+      if (typeof Worker !== "undefined" && typeof createImageBitmap === "function") {
+        try {
+          const blobUrl = URL.createObjectURL(new Blob([DECODE_WORKER], { type: "text/javascript" }));
+          const d = { worker: new Worker(blobUrl), url: blobUrl, next: 0, waiting: new Map<number, { resolve: (b: ImageBitmap) => void; reject: (e: Error) => void }>() };
+          d.worker.onmessage = (e: MessageEvent) => {
+            const w = d.waiting.get(e.data.id);
+            d.waiting.delete(e.data.id);
+            if (!w) e.data.bitmap?.close();
+            else if (e.data.bitmap) w.resolve(e.data.bitmap);
+            else w.reject(new Error(e.data.error));
+          };
+          // A page whose CSP refuses blob: workers finds out here, not in the constructor.
+          d.worker.onerror = () => {
+            for (const w of d.waiting.values()) w.reject(new Error("The decode worker did not start"));
+            d.waiting.clear();
+            d.worker.terminate();
+            URL.revokeObjectURL(d.url);
+            this.decoder = false;
+          };
+          this.decoder = d;
+        } catch { /* refused outright: the <img> path */ }
+      }
+    }
+    const d = this.decoder;
+    if (!d) return Promise.reject(new Error("No decode worker"));
+    return new Promise((resolve, reject) => {
+      const id = ++d.next;
+      d.waiting.set(id, { resolve, reject });
+      // Absolute: inside a blob: worker a relative URL has nothing to resolve against.
+      d.worker.postMessage({ id, url: new URL(url, location.href).href });
+    });
   }
 
   /** Show a photo: the 2048 first so something is on screen fast, then the
@@ -600,8 +735,10 @@ export class PanoEngine {
     if (token !== this.loadToken || this.disposed) return;
     this.retireCurrent();
     this.build(input);
+    const was = this.shown;
     this.shown = img;
     this.setTexture(img);
+    if (isBitmap(was)) was.close(); // the last photo's best rung: on the GPU already, or no longer wanted
     this.setHotspots(input.hotspots);
     if (this.renderer.xr.isPresenting) this.faceStartInVR();
     this.layers.minimap.hidden = !(this.settings.minimap && !this.isFlat);
@@ -626,11 +763,19 @@ export class PanoEngine {
     const bestUrl = urlFor(best);
     if (best && best !== first && bestUrl) {
       try {
-        const big = await loadImage(bestUrl);
-        if (token !== this.loadToken || this.disposed) return;
+        // An <img> (and a second download) only where the worker is not to be had.
+        const big: PhotoSource = await this.decodeBitmap(bestUrl).catch(() => loadImage(bestUrl));
+        if (token !== this.loadToken || this.disposed) {
+          if (isBitmap(big)) big.close();
+          return;
+        }
         this.shown = big;
         if (this.blurs || this.grade) this.applyBlurPreview();
-        else this.setTexture(big);
+        else if (isBitmap(big)) await this.setTextureInStrips(big);
+        // The minimap stays as the first paint drew it: it is 560 across, and
+        // redrawing it from the 8000 cost a 120 ms frame as that arrived.
+        else this.setTexture(big, false);
+        if (token !== this.loadToken || this.disposed) return;
         this.cb.onLoaded?.({ width: best, final: true });
       } catch {
         /* The 2048 stays up; better than nothing on a slow link. */
@@ -663,12 +808,18 @@ export class PanoEngine {
   private refreshPreview() {
     if (!this.blurs && !this.grade) {
       if (this.bakeTimer) clearTimeout(this.bakeTimer);
-      if (this.shown) this.setTexture(this.shown);
+      // Back to the photo only when a preview is what is on it. Curate clears the
+      // preview as it closes, pano-desk on every photo it opens, and putting the
+      // photo back for nothing re-uploaded all of it (a 360 ms frame for an 8000).
+      if (this.shown && this.preview && this.drawnFrom === this.preview) this.setTexture(this.shown);
+      this.preview = null;
       return;
     }
     this.applyBlurPreview();
   }
 
+  /** The blur or grade preview last put on the photo. */
+  private preview: HTMLCanvasElement | null = null;
   private bakeTimer: ReturnType<typeof setTimeout> | null = null;
   private applyBlurPreview() {
     if (this.bakeTimer) clearTimeout(this.bakeTimer);
@@ -679,13 +830,14 @@ export class PanoEngine {
       const sh = "naturalHeight" in src ? src.naturalHeight : src.height;
       // Preview at up to 4096 wide: plenty to judge a blur, quick to redraw.
       const k = Math.min(1, 4096 / sw);
-      this.setTexture(bakeTo(src, Math.round(sw * k), Math.round(sh * k), this.blurs ?? [], this.grade));
+      this.preview = bakeTo(src, Math.round(sw * k), Math.round(sh * k), this.blurs ?? [], this.grade);
+      this.setTexture(this.preview);
     }, 90);
   }
 
   /** The image currently shown (with any blur preview), for rendering a thumbnail. */
-  thumbSource(): HTMLImageElement | HTMLCanvasElement | null {
-    return (this.texture?.image as HTMLImageElement | HTMLCanvasElement | undefined) ?? this.shown;
+  thumbSource(): PhotoSource | null {
+    return this.drawnFrom ?? this.shown;
   }
 
   /* --------------------------------------------------------- view */
@@ -856,6 +1008,7 @@ export class PanoEngine {
       } else this.applyView();
     }
     if (this.renderer.xr.isPresenting) this.vrTick();
+    if (this.strips) this.uploadStrip();
     const fading = !!this.outgoing;
     if (this.outgoing) {
       const k = Math.min(1, (now - this.outgoing.t0) / CROSSFADE_MS);
@@ -889,6 +1042,7 @@ export class PanoEngine {
           crop: { value: new THREE.Vector4(0, 0, 1, 1) },
           d: { value: 1 },
           rot: { value: new THREE.Matrix3() },
+          uvTransform: { value: new THREE.Matrix3() },
           tanHalf: { value: 1 },
           aspect: { value: 1 },
           bg: { value: new THREE.Color(this.background) },
@@ -915,6 +1069,8 @@ export class PanoEngine {
     const g = sphereParams(this.input!);
     const u = this.planet.mat.uniforms;
     u.map.value = this.texture;
+    this.texture!.updateMatrix();
+    u.uvTransform.value.copy(this.texture!.matrix);
     u.crop.value.set(g.cropL / g.fullW, g.cropT / g.fullH, g.cropW / g.fullW, g.cropH / g.fullH);
     u.d.value = this.planetD;
     this.camera.updateMatrixWorld();
@@ -1117,7 +1273,7 @@ export class PanoEngine {
 
   /* ------------------------------------------------------ minimap */
 
-  private drawMinimapBase(src: HTMLImageElement | HTMLCanvasElement) {
+  private drawMinimapBase(src: PhotoSource) {
     const c = this.layers.mmBase, ctx = c.getContext("2d");
     if (!ctx || !this.input) return;
     const W = c.width, H = c.height, g = sphereParams(this.input);
@@ -1653,6 +1809,10 @@ export class PanoEngine {
   private onContextRestored = () => {
     this.lastSig = "";
     this.invalidate();
+    // three re-uploads an image texture from its image; one filled by strips
+    // has none to go back to, so it is made again from the bitmap, in one go.
+    if (this.texture instanceof this.THREE.DataTexture && isBitmap(this.drawnFrom)) this.setTexture(this.drawnFrom, false);
+    else if (this.strips && isBitmap(this.strips.src.image)) void this.setTextureInStrips(this.strips.src.image);
   };
 
   private onSessionGranted = () => {

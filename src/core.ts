@@ -189,6 +189,18 @@ export function firstPaintWidth(sizes: number[]): number | null {
   return sizes.includes(FIRST_PAINT_WIDTH) ? FIRST_PAINT_WIDTH : Math.min(...sizes);
 }
 
+/** How many pixels of a big texture go up in one frame: about 2 ms on a desktop,
+ *  under 20 ms on a phone. In one go, the 8000 cost a 290 ms frame. */
+export const UPLOAD_STRIP_PX = 2_000_000;
+
+/** The rows [from, to) of each strip a width×height texture goes up in, one per frame. */
+export function uploadStrips(width: number, height: number, budget = UPLOAD_STRIP_PX): [number, number][] {
+  const rows = Math.max(1, Math.floor(budget / Math.max(1, width)));
+  const out: [number, number][] = [];
+  for (let y = 0; y < height; y += rows) out.push([y, Math.min(height, y + rows)]);
+  return out;
+}
+
 /* ------------------------------------------------------- blur geometry */
 
 const rad = (d: number) => (d * Math.PI) / 180;

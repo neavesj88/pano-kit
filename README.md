@@ -166,6 +166,16 @@ labels (`invalidate()` inside). A still photo costs no GPU time; in VR it always
 draws. The pixel ratio is capped at `maxPixelRatio` (default 1.5). Pages should
 also avoid `backdrop-filter` over the canvas: the browser re-blurs it every frame.
 
+The best rung is fetched and decoded in a worker as an `ImageBitmap` and goes up
+to the GPU 2 megapixels a frame (`uploadStrips`), then replaces the 2048 in one
+step. An `<img>` decodes off the main thread too, but uploading one copies every
+pixel on it in one call: measured in Edge on an RTX 5080, the 8000 froze the
+page for 250 ms (nearly a second at a 4× CPU throttle), right in the middle of the
+opening. Strips cost 2 to 5 ms each (10 to 14 ms throttled). A bitmap cannot be
+flipped as it uploads, so it is stored top down and turned over by the
+texture's transform. Where a worker cannot start (a CSP that refuses `blob:`),
+the `<img>` path is used. The minimap is drawn from the first paint only.
+
 ## pano-desk
 
 `desk/` is a local app built on the kit: browse trip folders, grade and blur a
@@ -201,6 +211,9 @@ controls (snap-turn direction, drag direction, the 3° drag-or-click line,
 label cards' size and reach): written against the WebXR spec, not yet worn.
 On an iPhone: that 4096 (what a handheld gets when the browser does not report
 its memory) keeps Safari from reloading the tab; 8192 is suspected of causing it.
+The strip upload of the best rung (an `ImageBitmap` from a worker, with
+`UNPACK_SKIP_ROWS`) was checked pixel for pixel in Chromium only; Safari and
+the Quest browser have not run it.
 
 ## Licence
 

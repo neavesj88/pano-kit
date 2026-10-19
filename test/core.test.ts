@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   resolveKind, parseLocation, isMapsShortLinkHost, mapsUrl, geoUri, normaliseView, parseViewHash, formatViewHash,
   derivativeWidths, textureCap, pickWidth, firstPaintWidth, capPolygon, sortPanos, groupByDay, slugify, panoKeys,
-  isAllowedAssetName, wrap180,
+  isAllowedAssetName, wrap180, uploadStrips,
 } from "../src/core";
 import { fitBadge, type BadgeLine } from "../src/core";
 
@@ -102,6 +102,21 @@ describe("derivatives", () => {
     expect(pickWidth([], 4096)).toBeNull();
     expect(firstPaintWidth([4000, 2048])).toBe(2048);
     expect(firstPaintWidth([1800])).toBe(1800);
+  });
+  it("splits a big texture into strips that cover every row once", () => {
+    const covers = (strips: [number, number][], h: number) =>
+      strips.every(([a, b], i) => a < b && a === (i ? strips[i - 1][1] : 0)) && strips.at(-1)![1] === h;
+    const s8000 = uploadStrips(8000, 4000);
+    expect(s8000).toHaveLength(16); // 250 rows of 8000 a frame
+    expect(s8000[0]).toEqual([0, 250]);
+    expect(covers(s8000, 4000)).toBe(true);
+    const s4096 = uploadStrips(4096, 2048);
+    expect(s4096).toHaveLength(5); // 488 rows a frame, the last one short
+    expect(s4096.at(-1)).toEqual([1952, 2048]);
+    expect(covers(s4096, 2048)).toBe(true);
+    // Wider than the budget still moves a row a frame.
+    expect(uploadStrips(3_000_000, 2, 2_000_000)).toEqual([[0, 1], [1, 2]]);
+    expect(uploadStrips(100, 50, 1e9)).toEqual([[0, 50]]);
   });
 });
 
