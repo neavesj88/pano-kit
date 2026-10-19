@@ -16,12 +16,13 @@
  */
 import type * as T from "three";
 import {
-  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, FOV_MAX, FOV_MIN, NADIR_DEG_MAX, capPolygon, clamp, firstPaintWidth, fitBadge, pickWidth, textureCap, uploadStrips, wrap180,
+  DEFAULT_VIEW, DEFAULT_VIEWER_SETTINGS, FOV_MAX, FOV_MIN, NADIR_DEG_MAX, capPolygon, clamp, firstPaintWidth, pickWidth, textureCap, uploadStrips, wrap180,
   type Blur, type Hotspot, type ResolvedKind, type View, type ViewerSettings,
 } from "./core";
 import { bakeTo } from "./bake";
 import { isIdentityGrade, type Grade } from "./grade";
 import { overlayCamera, type Overlay } from "./overlay";
+import { badgeCanvas } from "./nadir";
 import { DRAG_DEG, SNAP_DEG, pointedLabel, pressOutcome, snapTurn, wrapLines, yawOf, type Vec3 } from "./vr";
 
 export type Three = typeof T;
@@ -1478,37 +1479,7 @@ export class PanoEngine {
   }
 
   private drawBadge(): HTMLCanvasElement {
-    const c = document.createElement("canvas");
-    c.width = c.height = 512;
-    const x = c.getContext("2d")!;
-    x.translate(256, 256);
-    const ring = x.createRadialGradient(0, 0, 150, 0, 0, 256);
-    ring.addColorStop(0, "rgba(10,6,18,1)");
-    ring.addColorStop(0.86, "rgba(10,6,18,1)");
-    ring.addColorStop(1, "rgba(10,6,18,0)");
-    x.fillStyle = ring;
-    x.beginPath(); x.arc(0, 0, 256, 0, Math.PI * 2); x.fill();
-    x.strokeStyle = this.accent; x.lineWidth = 6;
-    x.beginPath(); x.arc(0, 0, 178, 0, Math.PI * 2); x.stroke();
-    x.lineWidth = 2; x.strokeStyle = this.accent; x.globalAlpha = 0.5;
-    x.beginPath(); x.arc(0, 0, 150, 0, Math.PI * 2); x.stroke();
-    for (let i = 0; i < 36; i++) {
-      const a = (i * Math.PI) / 18, r1 = i % 9 === 0 ? 120 : 138;
-      x.beginPath(); x.moveTo(Math.sin(a) * r1, -Math.cos(a) * r1); x.lineTo(Math.sin(a) * 150, -Math.cos(a) * 150); x.stroke();
-    }
-    x.globalAlpha = 1;
-    if (this.badge) {
-      // Fitted inside the inner ring whatever the words: shrunk, then wrapped, then cut short.
-      x.textAlign = "center"; x.textBaseline = "middle";
-      const font = (size: number, sub: boolean) => `${sub ? 500 : 700} ${size}px system-ui, sans-serif`;
-      const measure = (t: string, size: number) => { x.font = font(size, false); return x.measureText(t).width; };
-      for (const l of fitBadge(this.badge.title, this.badge.subtitle, 138, measure)) {
-        x.font = font(l.size, l.sub);
-        x.fillStyle = l.sub ? this.accent : "#f5f3ff";
-        x.fillText(l.text, 0, l.y);
-      }
-    }
-    return c;
+    return badgeCanvas(this.badge ?? null, this.accent);
   }
 
   private drawPicture(src: CanvasImageSource & { width: number; height: number }): HTMLCanvasElement {
@@ -1543,7 +1514,8 @@ export class PanoEngine {
         makeCap(THREE, theta, RADIUS * (0.985 - 0.005 * layer)),
         new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
       );
-      mesh.renderOrder = 2 + layer;
+      // Over any overlaid photo or sticker (3), as the bake paints them; under labels (10 on).
+      mesh.renderOrder = 4 + layer;
       this.scene.add(mesh);
       c = { mesh, tex, key, theta, layer };
     } else if (c.theta !== theta) {

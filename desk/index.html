@@ -12,7 +12,7 @@
   <div id="crumb"></div>
   <nav id="dirs"></nav>
   <div id="grid"></div>
-  <footer id="sidefoot"></footer>
+  <footer id="sidefoot"><span id="sidecount"></span><button id="bulkOpen" class="ghost" title="Grade, brighten and save copies for a whole folder at once">Bulk…</button></footer>
 </aside>
 
 <main id="stage">
@@ -29,6 +29,8 @@
       <button data-src="edited" title="The copy already saved in the edited folder (edited\Edited_&lt;name&gt;.jpg), as it is.">Saved edit</button>
     </div>
     <button id="before" title="Hold to see it without your sliders and blurs (or hold \)">Before</button>
+    <button id="skip" title="Leave this photo out of the upload (or press X). Nothing is deleted: the original and its copy stay where they are.">Don't upload</button>
+    <button id="pcOpenDlg" title="Open the photo in PhotoCraft and follow it live">PhotoCraft…</button>
   </div>
   <div id="modehint" hidden></div>
   <div id="toast" hidden></div>
@@ -37,25 +39,23 @@
 
 <aside id="panel">
   <div class="tabs" role="tablist">
-    <button data-tab="adjust" class="on">Adjust</button>
-    <button data-tab="blur">Blur</button>
-    <button data-tab="view">View</button>
+    <button data-tab="adjust">Adjust</button>
+    <button data-tab="photo" class="on" title="Nadir disk, blurs, stickers, start view and labels">Photo</button>
     <button data-tab="info">Info</button>
-    <button data-tab="overlay" title="Then &amp; now: set an old photo into the 360">Overlay</button>
-    <button data-tab="pc">PhotoCraft</button>
+    <button data-tab="overlay" title="Set an old photo into the 360">Then &amp; now</button>
   </div>
-  <section id="tab-adjust" class="tab"></section>
-  <section id="tab-blur" class="tab" hidden></section>
-  <section id="tab-view" class="tab" hidden></section>
+  <section id="tab-adjust" class="tab" hidden></section>
+  <section id="tab-photo" class="tab"><div id="tab-nadir"></div><div id="tab-blur"></div><div id="tab-stickers"></div><div id="tab-view"></div></section>
   <section id="tab-info" class="tab" hidden></section>
   <section id="tab-overlay" class="tab" hidden></section>
-  <section id="tab-pc" class="tab" hidden></section>
   <div id="savebar">
     <span id="dirty"></span>
     <button id="saveSettings" title="Write the recipe (sliders, blurs, start view, labels, place, location, description, tags) beside the original as .pano.json">Save settings</button>
     <button id="saveJpeg" class="primary" title="Bake everything, full size, into edited\Edited_&lt;name&gt;.jpg beside the original">Save edited copy</button>
   </div>
 </aside>
+<dialog id="bulk"></dialog>
+<dialog id="pcDialog"><div class="body"><h2>PhotoCraft</h2><div id="tab-pc"></div></div><div class="foot"><button id="pcClose">Close</button></div></dialog>
 <script type="module" src="./src/main.ts"></script>
 </body>
 </html>

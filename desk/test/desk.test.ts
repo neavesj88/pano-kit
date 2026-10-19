@@ -131,3 +131,122 @@ describe("presets", () => {
   });
 });
 
+
+import {
+  CLIP_ALLOW, DARK_LIFT, LIFT_MAX, LIFT_MAX_DIM, LIFT_TARGET, LIFT_TARGET_DIM, addGrades, brightShare, bulkGrade, clippedShare, daylight, horizonMedian, inDatedFolder,
+  liftMax, liftTarget,
+} from "../bulk.ts";
+import { DEFAULT_GRADE, applyGrade } from "../../src/grade.ts";
+import { blurAt, dragTo } from "../blurs.ts";
+
+/** w by h RGBA, grey `sky` in the top quarter and grey `mid` below it: with a bright sky a
+ *  third of the frame above the ground is bright, which reads as daylight. */
+const pano = (w: number, h: number, sky: number, mid: number) => {
+  const px = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = y < h / 4 ? sky : mid; px.set([v, v, v, 255], (y * w + x) * 4); }
+  return px;
+};
+
+describe("bulk", () => {
+  const look = { ...DEFAULT_GRADE, vibrance: 30, highlights: -20, whites: -5, contrast: 5 };
+
+  it("aims dark shots at a normal level, easing in under the threshold", () => {
+    expect(liftTarget(0.4)).toBeNull();
+    expect(liftTarget(0.2)).toBeNull();
+    expect(liftTarget(0.1)).toBe(LIFT_TARGET);
+    const near = liftTarget(0.19)!;
+    expect(near).toBeGreaterThan(0.19);
+    expect(near).toBeLessThan(liftTarget(0.17)!);
+    expect(liftTarget(0.25, 0.3)).toBeGreaterThan(0.25);
+    expect(liftTarget(0.1, 0.2, 0)).toBe(LIFT_TARGET_DIM);
+  });
+
+  it("lifts night and dim rooms less, so night stays night", () => {
+    expect(daylight(0.02)).toBe(0);
+    expect(daylight(0.4)).toBe(1);
+    expect(daylight(0.15)).toBeCloseTo(0.5, 5);
+    expect(liftMax(0)).toBe(LIFT_MAX_DIM);
+    expect(liftMax(1)).toBe(LIFT_MAX);
+  });
+
+  it("finds the lift that brings a dark day shot to the target", () => {
+    const px = pano(64, 32, 200, 30);
+    const b = bulkGrade(look, px, 64, 32);
+    expect(b.median).toBeCloseTo(30 / 255, 5);
+    expect(b.lift).toBeGreaterThan(0);
+    expect(b.lift).toBeLessThanOrEqual(LIFT_MAX);
+    expect(b.after!).toBeGreaterThanOrEqual(LIFT_TARGET - 0.01);
+    expect(b.grade.vibrance).toBe(30);
+    expect(b.grade.exposure).toBeGreaterThan(0);
+    // The input is only read.
+    expect(px[(20 * 64 + 5) * 4]).toBe(30);
+  });
+
+  it("aims a night shot lower, and lifts a very dark one no more than its cap", () => {
+    const night = bulkGrade(look, pano(64, 32, 5, 30), 64, 32);
+    expect(night.bright).toBe(0);
+    expect(night.lift).toBeGreaterThan(0);
+    expect(night.lift).toBeLessThan(LIFT_MAX_DIM);
+    expect(night.after!).toBeGreaterThanOrEqual(LIFT_TARGET_DIM - 0.01);
+    expect(night.after!).toBeLessThan(LIFT_TARGET);
+    const black = bulkGrade(look, pano(64, 32, 2, 4), 64, 32);
+    expect(black.lift).toBe(LIFT_MAX_DIM);
+    expect(black.grade).toEqual(addGrades(look, DARK_LIFT, LIFT_MAX_DIM));
+  });
+
+  it("holds a lift back rather than blow out a bright sky", () => {
+    // Sky just under clipping over dark ground: daylight, dark, and the lift would clip the sky.
+    const px = pano(64, 32, 238, 30);
+    const b = bulkGrade(look, px, 64, 32);
+    expect(b.held).toBe(true);
+    expect(b.after!).toBeLessThan(LIFT_TARGET);
+    const out = px.slice();
+    applyGrade(out, b.grade);
+    const plain = px.slice();
+    applyGrade(plain, look);
+    expect(clippedShare(out, 64, 32) - clippedShare(plain, 64, 32)).toBeLessThanOrEqual(CLIP_ALLOW);
+    // The same ground under a sky with room to spare reaches the target.
+    expect(bulkGrade(look, pano(64, 32, 200, 30), 64, 32).held).toBe(false);
+  });
+
+  it("leaves normal shots, and runs without pixels, on the look alone", () => {
+    expect(bulkGrade(look, pano(64, 32, 200, 120), 64, 32)).toMatchObject({ grade: look, lift: 0 });
+    expect(bulkGrade(look, null).grade).toEqual(look);
+    expect(bulkGrade(null, null).grade).toEqual(DEFAULT_GRADE);
+    expect(addGrades({ ...DEFAULT_GRADE, shadows: 90 }, { ...DEFAULT_GRADE, shadows: 60 }).shadows).toBe(100);
+  });
+
+  it("measures the middle band, and the bright share above the ground", () => {
+    // 4 rows of 2 pixels: bright sky, two dark middle rows, bright ground.
+    const px = new Uint8Array(4 * 2 * 4);
+    const row = (y: number, v: number) => { for (let x = 0; x < 2; x++) px.set([v, v, v, 255], (y * 2 + x) * 4); };
+    row(0, 250); row(1, 20); row(2, 20); row(3, 250);
+    expect(horizonMedian(px, 2, 4)).toBeCloseTo(20 / 255, 5);
+    // The bright ground row is left out: one bright row of the top three.
+    expect(brightShare(px, 2, 4)).toBeCloseTo(1 / 3, 5);
+  });
+
+  it("picks the blur under the pointer, topmost first, across the seam", () => {
+    const blurs = [{ yaw: 10, pitch: 0, r: 3 }, { yaw: 11, pitch: 0, r: 3 }, { yaw: 179, pitch: 5, r: 3 }, { u: 0.5, v: 0.5, r: 3 }];
+    expect(blurAt(blurs, 11, 0)).toBe(1);
+    expect(blurAt(blurs, 7.5, 0)).toBe(0);
+    expect(blurAt(blurs, -179, 5)).toBe(2);
+    expect(blurAt(blurs, 40, 0)).toBe(-1);
+    expect(blurAt([], 0, 0)).toBe(-1);
+  });
+
+  it("moves a dragged blur with the grab point under the pointer", () => {
+    expect(dragTo({ yaw: 2, pitch: -1 }, 30, 10)).toEqual({ yaw: 32, pitch: 9 });
+    expect(dragTo({ yaw: 5, pitch: 0 }, 178, 0)).toEqual({ yaw: -177, pitch: 0 });
+    expect(dragTo({ yaw: 0, pitch: 5 }, 0, 88)).toEqual({ yaw: 0, pitch: 90 });
+  });
+
+  it("keeps to trip folders named by date, not the sorting folders beside them", () => {
+    expect(inDatedFolder("E:\\04_10_2026_paris_town\\pano\\IMG_1.jpg", "E:\\")).toBe(true);
+    expect(inDatedFolder("E:\\_sorting_work\\04_10_2026_paris\\IMG_1.jpg", "E:\\")).toBe(false);
+    expect(inDatedFolder("E:\\OTHER\\IMG_1.jpg", "E:\\")).toBe(false);
+    expect(inDatedFolder("E:\\IMG_1.jpg", "E:\\")).toBe(false);
+    expect(inDatedFolder("E:\\04_10_2026_paris\\pano\\IMG_1.jpg", "E:\\04_10_2026_paris")).toBe(true);
+    expect(inDatedFolder("/photos/2026-10-04 paris/IMG_1.jpg", "/photos/")).toBe(true);
+  });
+});

@@ -8,6 +8,7 @@
 import { capPolygon, clamp, type Blur } from "./core";
 import { applyGrade, isIdentityGrade, type Grade } from "./grade";
 import { edgeMask, footprint, overlayCamera, type Overlay } from "./overlay";
+import { paintNadir, type NadirSource } from "./nadir";
 
 type Source = HTMLImageElement | HTMLCanvasElement | ImageBitmap;
 
@@ -29,9 +30,11 @@ function traceCap(ctx: CanvasRenderingContext2D, poly: [number, number][], offse
 }
 
 /** Draws `src` into `ctx` at W×H with every blur region applied, then the grade if one is given,
- *  then any overlaid photos (which keep their own colours: the grade is the 360's). */
+ *  then any overlaid photos (which keep their own colours: the grade is the 360's), then the
+ *  nadir disk over everything, as the viewer layers them. */
 export function paintBake(
   ctx: CanvasRenderingContext2D, W: number, H: number, src: Source, blurs: Blur[], grade?: Grade | null, overlays?: OverlaySource[] | null,
+  nadir?: NadirSource | null,
 ) {
   const { w: sw0, h: sh0 } = sizeOf(src);
   // The source may be a different size from the target (a derivative, a thumbnail):
@@ -89,6 +92,7 @@ export function paintBake(
     ctx.putImageData(data, 0, 0);
   }
   if (overlays?.length) paintOverlays(ctx, W, H, overlays);
+  if (nadir) paintNadir(ctx, W, H, nadir);
 }
 
 /**
@@ -159,15 +163,17 @@ export function paintOverlays(ctx: CanvasRenderingContext2D, W: number, H: numbe
   }
 }
 
-/** A new canvas of the photo at W×H, blurs, any grade and any overlaid photos applied. */
-export function bakeTo(src: Source, W: number, H: number, blurs: Blur[], grade?: Grade | null, overlays?: OverlaySource[] | null): HTMLCanvasElement {
+/** A new canvas of the photo at W×H, blurs, any grade, any overlaid photos and any nadir disk applied. */
+export function bakeTo(
+  src: Source, W: number, H: number, blurs: Blur[], grade?: Grade | null, overlays?: OverlaySource[] | null, nadir?: NadirSource | null,
+): HTMLCanvasElement {
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   // Read back once per bake when grading or overlaying: tell the browser so it keeps the pixels CPU-side.
-  const ctx = c.getContext("2d", (grade && !isIdentityGrade(grade)) || overlays?.length ? { willReadFrequently: true } : undefined);
+  const ctx = c.getContext("2d", (grade && !isIdentityGrade(grade)) || overlays?.length || nadir ? { willReadFrequently: true } : undefined);
   if (!ctx) throw new Error("This browser could not make a 2D canvas");
-  paintBake(ctx, W, H, src, blurs, grade, overlays);
+  paintBake(ctx, W, H, src, blurs, grade, overlays, nadir);
   return c;
 }
 

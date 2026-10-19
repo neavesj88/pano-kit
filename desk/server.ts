@@ -36,6 +36,11 @@ interface Config {
   port: number;
   browser: string | null;
   photocraft: PhotoCraftConfig | null;
+  /** A folder of cut-out pictures (transparent PNGs) to place into a 360 like a then-and-now photo. */
+  stickers: string | null;
+  /** The nadir disk baked into saved copies: whose © it carries, the title when a photo has none,
+   *  its ring colour and its size in degrees from straight down. */
+  badge: { owner: string | null; untitled: string; accent: string | null; deg: number };
   cache: string;
 }
 
@@ -52,6 +57,13 @@ function loadConfig(argv: string[]): Config {
     port: portArg >= 0 ? Number(argv[portArg + 1]) : Number(raw.port) || 5196,
     browser: raw.browser ?? null,
     photocraft: raw.photocraft?.cli ? { cli: raw.photocraft.cli, port: Number(raw.photocraft.port) || 7878, tokenFile: raw.photocraft.tokenFile } : null,
+    stickers: raw.stickers ? path.resolve(raw.stickers) : null,
+    badge: {
+      owner: typeof raw.badge?.owner === "string" && raw.badge.owner.trim() ? raw.badge.owner.trim() : null,
+      untitled: typeof raw.badge?.untitled === "string" ? raw.badge.untitled : "",
+      accent: typeof raw.badge?.accent === "string" ? raw.badge.accent : null,
+      deg: Number(raw.badge?.deg) >= 5 && Number(raw.badge?.deg) <= 75 ? Number(raw.badge.deg) : 12,
+    },
     cache: raw.cache ? path.resolve(raw.cache) : path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), ".cache"), "pano-desk"),
   };
   for (const r of cfg.roots) if (!fs.existsSync(r)) console.warn(`Root not found (yet): ${r}`);
@@ -263,6 +275,19 @@ setInterval(livePoll, 1200);
 
 /* ------------------------------------------------------------ routes */
 
+/** Every 360 original in a folder and all the folders below it (not the edited, overlay or
+ *  hidden ones), for bulk work: the same photo objects as list(), each with its folder. */
+async function scan(dir: string) {
+  const photos: unknown[] = [];
+  const walk = async (d: string) => {
+    const listing = await list(d);
+    photos.push(...listing.photos);
+    for (const sub of listing.dirs.sort((a, b) => a.name.localeCompare(b.name))) await walk(sub.path);
+  };
+  await walk(dir);
+  return { path: dir, photos };
+}
+
 async function list(dir: string | null) {
   if (!dir) return { path: null, parent: null, dirs: cfg.roots.map(r => ({ name: r, path: r })), photos: [], hidden: 0 };
   const full = await allowed(dir);
@@ -284,11 +309,14 @@ async function list(dir: string | null) {
     }
     const edited = editedNames.has(path.basename(editedPath(file)).toLowerCase()) ? await statOrNull(editedPath(file)) : null;
     const work = cfg.work && !isInsideAny([cfg.work], file) ? await statOrNull(editedPath(workCopyPath(file, cfg.work, cfg.roots))) : null;
+    const sidecar = names.has(path.basename(sidecarPath(file)).toLowerCase());
+    let skip = false;
+    if (sidecar) try { skip = JSON.parse(await fsp.readFile(sidecarPath(file), "utf8"))?.skip === true; } catch { /* unreadable settings: not marked */ }
     photos.push({
       name: e.name, path: file, size: st.size, mtime: st.mtimeMs, width: h.width, height: h.height,
       edited: edited ? { path: editedPath(file), mtime: edited.mtimeMs } : null,
       work: work && cfg.work ? { path: editedPath(workCopyPath(file, cfg.work, cfg.roots)), mtime: work.mtimeMs } : null,
-      sidecar: names.has(path.basename(sidecarPath(file)).toLowerCase()),
+      sidecar, skip,
     });
   }
   const parent = cfg.roots.some(r => samePath(r, full)) ? null : path.dirname(full);
@@ -312,10 +340,24 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
   const p = url.pathname;
 
   if (p === "/api/ping") return send(res, 200, { app: "pano-desk" });
-  if (p === "/api/config") return send(res, 200, { roots: cfg.roots, work: cfg.work, photocraft: !!pc });
+  if (p === "/api/config") return send(res, 200, { roots: cfg.roots, work: cfg.work, photocraft: !!pc, badge: cfg.badge });
   if (p === "/api/events") return events(req, res);
   if (p === "/api/list") return send(res, 200, await list(q("path")));
+  if (p === "/api/scan") return send(res, 200, await scan(await allowed(q("path"), cfg.roots)));
   if (p === "/api/file") return sendFile(req, res, await allowed(q("path")), "no-cache");
+
+  // The stickers folder: its pictures by name, and one picture. Only names overlayFileName
+  // leaves as they are, so nothing outside the folder can be asked for.
+  if (p === "/api/stickers") {
+    if (!cfg.stickers) return send(res, 200, { names: [] });
+    const names = (await fsp.readdir(cfg.stickers).catch(() => [] as string[])).filter(n => overlayFileName(n) === n);
+    return send(res, 200, { names: names.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })) });
+  }
+  if (p === "/api/sticker") {
+    const name = q("name") ?? "";
+    if (!cfg.stickers || overlayFileName(name) !== name) throw new HttpError(404, "No such sticker");
+    return sendFile(req, res, path.join(cfg.stickers, name), "no-cache");
+  }
 
   if (p === "/api/thumb") {
     const file = await allowed(q("path"));
@@ -357,6 +399,19 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
     const st = await statOrNull(side);
     if (!st) return send(res, 200, null);
     return send(res, 200, JSON.parse(await fsp.readFile(side, "utf8")));
+  }
+
+  // "Don't upload": a mark in the .pano.json that the upload staging leaves out. Set on its own,
+  // so marking a photo never saves the page's other unsaved changes. Nothing is deleted.
+  if (p === "/api/skip" && req.method === "POST") {
+    const original = await originalPath(q("path"));
+    const side = sidecarPath(original);
+    const data = (await statOrNull(side)) ? JSON.parse(await fsp.readFile(side, "utf8")) : { version: 1 };
+    if (q("on") === "1") data.skip = true;
+    else delete data.skip;
+    await writeAtomic(side, JSON.stringify(data, null, 2) + "\n");
+    broadcast("saved", { path: side });
+    return send(res, 200, { skip: data.skip === true });
   }
 
   // The page's baked JPEG (or, with lossless=1, the original's own pixels) with the

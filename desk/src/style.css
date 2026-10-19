@@ -95,3 +95,28 @@ label.filebtn:hover { border-color: #55555f; }
 label.filebtn.disabled { opacity: .45; cursor: default; pointer-events: none; }
 .preset { display: flex; gap: 6px; align-items: center; }
 .preset select { flex: 1; min-width: 0; }
+#sidefoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+dialog#bulk { width: min(560px, 92vw); max-height: 86vh; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0; }
+dialog#bulk::backdrop { background: rgba(0,0,0,.55); }
+#bulk .body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+#bulk h2 { font-size: 15px; margin: 0; }
+#bulk label.opt { display: flex; align-items: center; gap: 8px; }
+#bulk .sub { margin-left: 26px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+#bulk .progress { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
+#bulk .progress > div { height: 100%; background: var(--accent2); width: 0; }
+#bulk .log { max-height: 180px; overflow: auto; font: 12px/1.4 ui-monospace, Consolas, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; }
+#bulk .foot { display: flex; gap: 6px; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--line); }
+.stickers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0 10px; }
+.stickers button { padding: 4px; aspect-ratio: 1; display: grid; place-items: center; background: var(--panel2); }
+.stickers img { max-width: 100%; max-height: 100%; object-fit: contain; }
+#skip.on { background: var(--err); border-color: var(--err); color: #000; }
+.tile.skip img { opacity: .35; }
+.tile .badges span.skip { background: var(--err); color: #000; }
+dialog#pcDialog { width: min(480px, 92vw); background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0; }
+dialog#pcDialog::backdrop { background: rgba(0,0,0,.55); }
+#pcDialog .body { padding: 14px 16px; }
+#pcDialog h2 { font-size: 15px; margin: 0 0 8px; }
+#pcDialog .foot { display: flex; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--line); }
+#tab-photo > div + div { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 2px; }
+#tab-photo > div:empty { display: none; }
+label.check { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: var(--muted); }

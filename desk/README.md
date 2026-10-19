@@ -60,6 +60,8 @@ npm run desk            # opens an app window; the server stops 15 s after it cl
 | `work` | PhotoCraft's automation read/write root (`--automation-read-root`/`--automation-write-root`). |
 | `port` | Default 5196. The server listens on 127.0.0.1 only. |
 | `photocraft` | `cli` (photocraft-cli.exe), `port` and `tokenFile`, as PhotoCraft's own `--control` launch uses. Leave it out to hide the PhotoCraft tab. |
+| `stickers` | A folder of cut-out pictures (transparent PNGs). The Overlay tab shows them; a click sets one into the 360 where you are looking, small, to drag, size and turn like a then-and-now photo. Leave it out to hide them. |
+| `badge` | The nadir disk baked into every saved copy (View tab: on or off, size, turn): `owner` for its "© owner year" line, `untitled` for photos with no title yet, `accent` for its rings, `deg` for its default size (12). |
 | `browser` | The app window's browser (default Edge). |
 | `cache` | Where thumbnails go. |
 
